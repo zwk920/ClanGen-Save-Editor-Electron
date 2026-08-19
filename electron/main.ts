@@ -90,7 +90,7 @@ function registerFileHandlers(): void {
     await fs.writeFile(filePath, contents, 'utf8');
   });
 
-  ipcMain.handle('clans:save', async (_event, clanCatsPath: string, cats: unknown) => {
+  ipcMain.handle('clans:save', async (_event, clanCatsPath: string, cats: unknown, metadataContents?: string | null) => {
     const savePath = resolveClanCatsPath(clanCatsPath);
     const catsContents = JSON.stringify(cats, null, 2) + '\n';
     const clanFolderPath = path.dirname(savePath);
@@ -98,7 +98,9 @@ function registerFileHandlers(): void {
     await fs.writeFile(savePath, catsContents, 'utf8');
     try {
       if (!metadataPath) return { metadataFileName: null };
-      const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf8')) as Record<string, unknown>;
+      const metadata = metadataContents
+        ? JSON.parse(metadataContents) as Record<string, unknown>
+        : JSON.parse(await fs.readFile(metadataPath, 'utf8')) as Record<string, unknown>;
       metadata.clan_cats = Array.isArray(cats) ? cats.map((cat) => String((cat as Record<string, unknown>).ID)).join(',') : '';
       await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2) + '\n', 'utf8');
       return { metadataFileName: path.basename(metadataPath) };
@@ -158,25 +160,26 @@ function registerFileHandlers(): void {
   });
 }
 
-async function discoverClanFolders(rootPath?: string): Promise<Array<{ name: string; path: string }>> {
+async function discoverClanFolders(rootPath?: string): Promise<Array<{ name: string; path: string; gameVersion: string }>> {
   const roots = rootPath ? [path.resolve(rootPath)] : defaultSavesPaths;
-  const discovered = new Map<string, { name: string; path: string }>();
+  const discovered = new Map<string, { name: string; path: string; gameVersion: string }>();
   for (const currentRoot of roots) {
     for (const clan of await discoverClanFoldersInRoot(currentRoot)) discovered.set(path.resolve(clan.path), clan);
   }
   return [...discovered.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
 
-async function discoverClanFoldersInRoot(rootPath: string): Promise<Array<{ name: string; path: string }>> {
+async function discoverClanFoldersInRoot(rootPath: string): Promise<Array<{ name: string; path: string; gameVersion: string }>> {
   try {
     const entries = await fs.readdir(rootPath, { withFileTypes: true });
-    const clans: Array<{ name: string; path: string }> = [];
+    const clans: Array<{ name: string; path: string; gameVersion: string }> = [];
+    const gameVersion = path.basename(path.dirname(rootPath)) || 'Unknown';
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       const clanPath = path.join(rootPath, entry.name);
       try {
         await fs.access(path.join(clanPath, 'clan_cats.json'));
-        clans.push({ name: entry.name, path: clanPath });
+        clans.push({ name: entry.name, path: clanPath, gameVersion });
       } catch {
         // Ignore folders that are not complete ClanGen save folders.
       }

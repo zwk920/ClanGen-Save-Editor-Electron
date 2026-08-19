@@ -39,6 +39,11 @@
         "xOffset": 0.0,
         "yOffset": 0.0
     },
+    "lifegen_lineart_ur": {
+        "spritesheet": "lifegen_lineart_ur",
+        "xOffset": 0.0,
+        "yOffset": 0.0
+    },
     "line_sc_overlay": {
         "spritesheet": "line_sc_overlay",
         "xOffset": 0.0,

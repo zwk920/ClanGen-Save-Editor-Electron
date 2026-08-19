@@ -19,6 +19,7 @@ export interface SavedClanFiles {
 export interface DiscoveredClan {
   name: string;
   path: string;
+  gameVersion: string;
 }
 
 export interface ElectronFileSystem {
@@ -28,7 +29,7 @@ export interface ElectronFileSystem {
   openFile: () => Promise<OpenedFile | null>;
   chooseSaveFile: (fileName: string, currentPath?: string | null) => Promise<SavedFile | null>;
   writeFile: (filePath: string, contents: string) => Promise<void>;
-  saveClanFiles: (clanCatsPath: string, cats: unknown) => Promise<SavedClanFiles>;
+  saveClanFiles: (clanCatsPath: string, cats: unknown, metadataContents?: string | null) => Promise<SavedClanFiles>;
   selectResourceDirectory: () => Promise<{ parentPath: string; directoryPath: string } | null>;
   readResourceFile: (directoryPath: string, relativePath: string) => Promise<string | null>;
   writeResourceFile: (directoryPath: string, relativePath: string, contents: string) => Promise<void>;
@@ -43,7 +44,7 @@ contextBridge.exposeInMainWorld('electronFileSystem', {
   openFile: () => ipcRenderer.invoke('file:open'),
   chooseSaveFile: (fileName: string, currentPath?: string | null) => ipcRenderer.invoke('file:choose-save', fileName, currentPath),
   writeFile: (filePath: string, contents: string) => ipcRenderer.invoke('file:write', filePath, contents),
-  saveClanFiles: (clanCatsPath: string, cats: unknown) => ipcRenderer.invoke('clans:save', clanCatsPath, cats),
+  saveClanFiles: (clanCatsPath: string, cats: unknown, metadataContents?: string | null) => ipcRenderer.invoke('clans:save', clanCatsPath, cats, metadataContents),
   selectResourceDirectory: () => ipcRenderer.invoke('resources:select'),
   readResourceFile: (directoryPath: string, relativePath: string) => ipcRenderer.invoke('resources:read-file', directoryPath, relativePath),
   writeResourceFile: (directoryPath: string, relativePath: string, contents: string) => ipcRenderer.invoke('resources:write-file', directoryPath, relativePath, contents),

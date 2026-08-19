@@ -8,6 +8,7 @@ import {
   Box,
   Button,
   Checkbox,
+  Chip,
   Drawer,
   Dialog,
   DialogActions,
@@ -51,6 +52,8 @@ import {
 import { optionsForField } from './services/resourceCatalog';
 import { FACET_NAMES } from './model/catDocument';
 import { CatPreview } from './components/CatPreview';
+import { FamilyTree } from './components/FamilyTree';
+import { afterlifeStateForCat, isDeadCat as isDeadCatByBackstory } from './model/afterlife';
 
 const tabLabels = ['Overview', 'Identity', 'Appearance', 'Relationships', 'Skills', 'Faith', 'JSON', 'Validation'];
 const lifeStageSprites = [
@@ -61,6 +64,14 @@ const lifeStageSprites = [
   ['Senior', 'sprite_senior'],
   ['Paralyzed adult', 'sprite_para_adult'],
 ] as const;
+function lifeStageForMoons(moonsValue: unknown): [string, string] {
+  const moons = Number(moonsValue);
+  if (!Number.isFinite(moons) || moons <= 0) return lifeStageSprites[0] as [string, string];
+  if (moons < 6) return lifeStageSprites[1] as [string, string];
+  if (moons < 12) return lifeStageSprites[2] as [string, string];
+  if (moons < 120) return lifeStageSprites[3] as [string, string];
+  return lifeStageSprites[4] as [string, string];
+}
 const REQUIRED_APPEARANCE_SELECT_FIELDS = new Set([
   'pelt_name',
   'pelt_color',
@@ -261,6 +272,7 @@ export default function App() {
   const openingFile = useEditorStore((state) => state.openingFile);
   const resourceCatalog = useEditorStore((state) => state.resourceCatalog);
   const resourceDirPath = useEditorStore((state) => state.resourceDirPath);
+  const clanMetadataReference = useEditorStore((state) => state.clanMetadataReference);
   const namesJson = useEditorStore((state) => state.namesJson);
   const namesFileDirty = useEditorStore((state) => state.namesFileDirty);
   const clans = useEditorStore((state) => state.clans);
@@ -270,6 +282,7 @@ export default function App() {
   const openSaveFile = useEditorStore((state) => state.openSaveFile);
   const openResourceDir = useEditorStore((state) => state.openResourceDir);
   const saveDocument = useEditorStore((state) => state.saveDocument);
+  const updateClanMetadata = useEditorStore((state) => state.updateClanMetadata);
   const saveNamesFile = useEditorStore((state) => state.saveNamesFile);
   const setNamesJson = useEditorStore((state) => state.setNamesJson);
   const validate = useEditorStore((state) => state.validate);
@@ -281,6 +294,16 @@ export default function App() {
   const updateCat = useEditorStore((state) => state.updateCat);
 
   const catList = document?.cats ?? [];
+
+  const clanMetadata = useMemo<Record<string, any> | null>(() => {
+    if (!clanMetadataReference?.contents) return null;
+    try {
+      const parsed = JSON.parse(clanMetadataReference.contents);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }, [clanMetadataReference]);
 
   const parsedNamesFromStore = useMemo<Record<string, any> | null>(() => {
     if (!namesJson) return null;
@@ -305,15 +328,31 @@ export default function App() {
   }, [selectedCatId, tabIndex]);
 
   const parsedNames = namesDraft;
+  const displaySpecialSuffixes = useMemo<Record<string, string>>(() => {
+    const defaults: Record<string, string> = {
+      newborn: 'kit',
+      kitten: 'kit',
+      apprentice: 'paw',
+      'medicine cat apprentice': 'paw',
+      'mediator apprentice': 'paw',
+      "queen's apprentice": 'paw',
+      leader: 'star',
+    };
+    const source = parsedNamesFromStore?.special_suffixes;
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return defaults;
+    return {
+      ...defaults,
+      ...Object.fromEntries(Object.entries(source).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
+    };
+  }, [parsedNamesFromStore]);
+  const specialSuffixes = parsedNames?.special_suffixes && typeof parsedNames.special_suffixes === 'object'
+    ? parsedNames.special_suffixes as Record<string, string>
+    : {};
   const serializedNamesDraft = parsedNames ? JSON.stringify(parsedNames, null, 2) + '\n' : namesJson;
   const updateNamesDraft = (next: Record<string, any>) => {
     setNamesDraft(next);
     setNamesDraftDirty(true);
   };
-
-  const specialSuffixes = parsedNames?.special_suffixes && typeof parsedNames.special_suffixes === 'object'
-    ? parsedNames.special_suffixes as Record<string, string>
-    : {};
 
   const updateSpecialSuffix = (role: string, value: string) => {
     const current = parsedNames ?? {};
@@ -464,8 +503,82 @@ export default function App() {
 
   const displayCatLabel = (catId: string): string => {
     const cat = document?.getCat(catId);
-    const name = `${cat?.name_prefix ?? 'Unnamed'}${cat?.name_suffix ?? ''}`.trim() || 'Unnamed cat';
+    const name = displayCatName(cat);
     return `${name} (${catId})`;
+  };
+
+  const specialConditionForCat = (cat: Record<string, any> | null): string | null => {
+    if (!cat) return null;
+    const catId = String(cat.ID ?? '');
+    if (String(clanMetadata?.leader ?? '') === catId) return 'Leader';
+    if (String(clanMetadata?.deputy ?? '') === catId) return 'Deputy';
+    if (String(clanMetadata?.med_cat ?? '') === catId) return 'Medicine cat';
+    const groupHistory = cat.status?.group_history;
+    const currentHistory = Array.isArray(groupHistory) ? groupHistory[groupHistory.length - 1] : null;
+    const rank = String(currentHistory?.rank ?? '').toLowerCase();
+    const rankLabels: Record<string, string> = {
+      apprentice: 'Apprentice',
+      'medicine cat apprentice': 'Medicine cat apprentice',
+      'mediator apprentice': 'Mediator apprentice',
+      "queen's apprentice": "Queen's apprentice",
+      queen: 'Queen',
+      'medicine cat': 'Medicine cat',
+      mediator: 'Mediator',
+    };
+    if (rankLabels[rank]) return rankLabels[rank];
+    const moons = Number(cat.moons);
+    if (!Number.isFinite(moons) || moons <= 0) return 'Newborn';
+    if (moons < 6) return 'Kitten';
+    if (moons < 12) return 'Adolescent';
+    return null;
+  };
+
+  const isDeadCat = (cat: Record<string, any> | null): boolean => (
+    isDeadCatByBackstory(cat)
+  );
+
+  const orderedCatList = [...catList].sort((a, b) => Number(isDeadCat(a)) - Number(isDeadCat(b)));
+
+  const displayCatName = (cat: Record<string, any> | undefined): string => {
+    if (!cat) return 'Unnamed cat';
+    if (cat.specsuffix_hidden) return `${cat.name_prefix ?? 'Unnamed'}${cat.name_suffix ?? ''}`.trim() || 'Unnamed cat';
+    const catId = String(cat.ID ?? '');
+    const currentGroupId = String(clanMetadata?.used_group_IDs?.[catId] ?? '1');
+    const isLeader = String(clanMetadata?.leader ?? '') === catId;
+    const groupHistory = cat.status?.group_history;
+    const currentHistory = Array.isArray(groupHistory)
+      ? [...groupHistory].reverse().find((entry) => String(entry?.group ?? '') === currentGroupId) ?? groupHistory[groupHistory.length - 1]
+      : null;
+    const baseRank = String(currentHistory?.rank ?? '').toLowerCase();
+    const effectiveRank = isLeader ? 'leader' : baseRank === 'leader' && String(clanMetadata?.leader ?? '') !== catId ? 'member' : baseRank;
+    const roleKey = isLeader ? 'leader' : effectiveRank;
+    const specialSuffix = displaySpecialSuffixes[roleKey];
+    const moons = Number(cat.moons);
+    const ageKey = !Number.isFinite(moons) || moons <= 0
+      ? 'newborn'
+      : moons < 6
+        ? 'kitten'
+        : moons < 12 && displaySpecialSuffixes[roleKey]
+          ? roleKey
+          : null;
+    const suffix = specialSuffix ?? (ageKey ? displaySpecialSuffixes[ageKey] : undefined) ?? cat.name_suffix ?? '';
+    return `${cat.name_prefix ?? 'Unnamed'}${suffix}`.trim() || 'Unnamed cat';
+  };
+
+  const syncCatRoleRank = (catId: string, rank: 'leader' | 'deputy' | 'medicine cat' | 'member') => {
+    const cat = document?.getCat(catId);
+    if (!cat) return;
+
+    const status = cat.status && typeof cat.status === 'object' ? { ...cat.status } : {};
+    const history = Array.isArray(status.group_history)
+      ? status.group_history.map((entry: Record<string, unknown>) => ({ ...entry }))
+      : [{ group: '1', moons_as: 0 }];
+
+    const lastEntry = history.length > 0 ? history.length - 1 : 0;
+    if (history.length === 0) history.push({ group: '1', moons_as: 0 });
+    history[lastEntry] = { ...history[lastEntry], rank };
+
+    updateCat(catId, { ...cat, status: { ...status, group_history: history } });
   };
 
   const selectedCatLabel = selectedCatId ? displayCatLabel(selectedCatId) : 'the selected cat';
@@ -962,20 +1075,214 @@ export default function App() {
     );
   };
 
-  const renderOverview = () => (
-    <Box sx={{ display: 'grid', gap: 2 }}>
-      <Paper sx={{ p: 2 }}>
-        <Typography variant="h5">{selectedCat ? `${selectedCat.name_prefix ?? 'Unnamed'}${selectedCat.name_suffix ?? ''}` : 'Unnamed cat'}</Typography>
-        <Typography color="text.secondary" sx={{ mb: 2 }}>ID: {selectedCat?.ID ?? '—'} • Trait: {selectedCat?.trait ?? '—'} • Moons: {selectedCat?.moons ?? 0}</Typography>
-      </Paper>
-      <Paper sx={{ p: 2 }}>
-        <Typography variant="subtitle1">Summary</Typography>
-        <Typography color="text.secondary">
-          Gender: {selectedCat?.gender ?? '—'} • Gender align: {selectedCat?.gender_align ?? '—'} • Experience: {selectedCat?.experience ?? 0}
-        </Typography>
-      </Paper>
-    </Box>
-  );
+  const renderOverview = () => {
+    const [lifeStageLabel, lifeStageField] = lifeStageForMoons(selectedCat?.moons);
+    const specialCondition = specialConditionForCat(selectedCat);
+    const dead = isDeadCat(selectedCat);
+    const afterlifeState = afterlifeStateForCat(selectedCat);
+    const afterlifeLabel = afterlifeState === 'starclan'
+      ? 'StarClan'
+      : afterlifeState === 'dark_forest'
+        ? 'Dark Forest'
+        : afterlifeState === 'unknown_residence'
+          ? 'Unknown Residence'
+          : null;
+    return (
+      <Box sx={{ display: 'grid', gap: 2 }}>
+        <Paper sx={{ p: 2, display: 'flex', alignItems: 'center', gap: 2 }}>
+          <CatPreview
+            cat={selectedCat}
+            poseName={typeof selectedCat?.[lifeStageField] === 'string' ? selectedCat[lifeStageField] : undefined}
+            label={lifeStageLabel}
+            size={144}
+          />
+          <Box>
+            <Typography variant="h5">{selectedCat ? `${selectedCat.name_prefix ?? 'Unnamed'}${selectedCat.name_suffix ?? ''}` : 'Unnamed cat'}</Typography>
+            <Typography color="text.secondary" sx={{ mb: 2 }}>ID: {selectedCat?.ID ?? '—'} • Trait: {selectedCat?.trait ?? '—'} • Moons: {selectedCat?.moons ?? 0}</Typography>
+            {specialCondition && <Typography variant="body2" color="primary.main">Special condition: {specialCondition}</Typography>}
+            {dead && <Typography variant="body2" color="error.main">Status: Dead</Typography>}
+            {afterlifeLabel && <Typography variant="body2" color="text.secondary">Afterlife: {afterlifeLabel}</Typography>}
+          </Box>
+        </Paper>
+        <Paper sx={{ p: 2 }}>
+          <Typography variant="subtitle1">Summary</Typography>
+          <Typography color="text.secondary">
+            Gender: {selectedCat?.gender ?? '—'} • Gender align: {selectedCat?.gender_align ?? '—'} • Experience: {selectedCat?.experience ?? 0}
+          </Typography>
+        </Paper>
+      </Box>
+    );
+  };
+
+  const renderFamilyTree = () => {
+    if (!document || document.cats.length === 0) {
+      return <Alert severity="info">Load a clan save to view the family tree.</Alert>;
+    }
+    return (
+      <FamilyTree
+        cats={document.cats}
+        selectedCatId={selectedCatId}
+        onSelectCat={setSelectedCatId}
+        displayCatLabel={displayCatLabel}
+        roleForCat={(catId) => String(clanMetadata?.leader ?? '') === catId
+          ? 'Leader'
+          : String(clanMetadata?.deputy ?? '') === catId
+            ? 'Deputy'
+            : String(clanMetadata?.med_cat ?? '') === catId
+              ? 'Medicine cat'
+              : null}
+        specialConditionForCat={specialConditionForCat}
+        isDeadCat={(cat) => isDeadCat(cat)}
+        poseForCat={(cat) => {
+          const [, poseField] = lifeStageForMoons(cat.moons);
+          return typeof cat[poseField] === 'string' ? cat[poseField] : undefined;
+        }}
+      />
+    );
+  };
+
+  const renderClanAttributes = () => {
+    if (!clanMetadata) {
+      return <Alert severity="info">This save does not have a companion clan JSON file.</Alert>;
+    }
+
+    const catOptions = catList.map((cat) => String(cat.ID)).filter(Boolean);
+    const mediatorIds = Array.isArray(clanMetadata.mediated) ? clanMetadata.mediated.map(String) : [];
+    const queenIds = catList
+      .filter((cat) => {
+        const history = cat.status?.group_history;
+        const current = Array.isArray(history) ? history[history.length - 1] : null;
+        return String(current?.rank ?? '').toLowerCase() === 'queen';
+      })
+      .map((cat) => String(cat.ID));
+
+    const catLabel = (catId: string) => displayCatLabel(catId);
+    const updateRank = (cat: Record<string, any>, rank: string) => {
+      const status = cat.status && typeof cat.status === 'object' ? { ...cat.status } : {};
+      const history = Array.isArray(status.group_history)
+        ? status.group_history.map((entry: Record<string, unknown>) => ({ ...entry }))
+        : [{ group: '1', moons_as: 0 }];
+      const lastEntry = history.length - 1;
+      history[lastEntry] = { ...history[lastEntry], rank };
+      updateCat(String(cat.ID), { status: { ...status, group_history: history } });
+    };
+
+    return (
+      <Box sx={{ display: 'grid', gap: 2 }}>
+        <Alert severity="info">These assignments are saved to the companion clan JSON. Queen assignments update the selected cats' current status rank.</Alert>
+        <Paper sx={{ p: 2 }}>
+          <Typography variant="h6" gutterBottom>Clan roles</Typography>
+          <Grid container spacing={2}>
+            <Grid item xs={12} md={4}>
+              <FormControl fullWidth>
+                <InputLabel>Leader</InputLabel>
+                <Select
+                  value={String(clanMetadata.leader ?? '')}
+                  label="Leader"
+                  onChange={(event) => {
+                    const nextLeaderId = String(event.target.value);
+                    const previousLeaderId = String(clanMetadata.leader ?? '');
+                    if (previousLeaderId && previousLeaderId !== nextLeaderId) {
+                      syncCatRoleRank(previousLeaderId, 'member');
+                    }
+                    if (nextLeaderId) {
+                      syncCatRoleRank(nextLeaderId, 'leader');
+                    }
+                    updateClanMetadata({ leader: nextLeaderId });
+                  }}
+                >
+                  <MenuItem value="">None</MenuItem>
+                  {catOptions.map((catId) => <MenuItem key={catId} value={catId}>{catLabel(catId)}</MenuItem>)}
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <FormControl fullWidth>
+                <InputLabel>Deputy</InputLabel>
+                <Select
+                  value={String(clanMetadata.deputy ?? '')}
+                  label="Deputy"
+                  onChange={(event) => {
+                    const nextDeputyId = String(event.target.value);
+                    const previousDeputyId = String(clanMetadata.deputy ?? '');
+                    if (previousDeputyId && previousDeputyId !== nextDeputyId) {
+                      syncCatRoleRank(previousDeputyId, 'member');
+                    }
+                    if (nextDeputyId) {
+                      syncCatRoleRank(nextDeputyId, 'deputy');
+                    }
+                    updateClanMetadata({ deputy: nextDeputyId });
+                  }}
+                >
+                  <MenuItem value="">None</MenuItem>
+                  {catOptions.map((catId) => <MenuItem key={catId} value={catId}>{catLabel(catId)}</MenuItem>)}
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12} md={4}>
+              <FormControl fullWidth>
+                <InputLabel>Medicine cat</InputLabel>
+                <Select
+                  value={String(clanMetadata.med_cat ?? '')}
+                  label="Medicine cat"
+                  onChange={(event) => {
+                    const nextMedCatId = String(event.target.value);
+                    const previousMedCatId = String(clanMetadata.med_cat ?? '');
+                    if (previousMedCatId && previousMedCatId !== nextMedCatId) {
+                      syncCatRoleRank(previousMedCatId, 'member');
+                    }
+                    if (nextMedCatId) {
+                      syncCatRoleRank(nextMedCatId, 'medicine cat');
+                    }
+                    updateClanMetadata({ med_cat: nextMedCatId });
+                  }}
+                >
+                  <MenuItem value="">None</MenuItem>
+                  {catOptions.map((catId) => <MenuItem key={catId} value={catId}>{catLabel(catId)}</MenuItem>)}
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12}>
+              <FormControl fullWidth>
+                <InputLabel>Mediators</InputLabel>
+                <Select
+                  multiple
+                  value={mediatorIds}
+                  label="Mediators"
+                  renderValue={(selected) => (selected as string[]).map(catLabel).join(', ')}
+                  onChange={(event) => updateClanMetadata({ mediated: event.target.value as string[] })}
+                >
+                  {catOptions.map((catId) => <MenuItem key={catId} value={catId}>{catLabel(catId)}</MenuItem>)}
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12}>
+              <FormControl fullWidth>
+                <InputLabel>Queens</InputLabel>
+                <Select
+                  multiple
+                  value={queenIds}
+                  label="Queens"
+                  renderValue={(selected) => (selected as string[]).map(catLabel).join(', ')}
+                  onChange={(event) => {
+                    const selectedIds = new Set(event.target.value as string[]);
+                    for (const cat of catList) {
+                      const catId = String(cat.ID);
+                      const wasQueen = queenIds.includes(catId);
+                      const isQueen = selectedIds.has(catId);
+                      if (wasQueen !== isQueen) updateRank(cat, isQueen ? 'queen' : 'member');
+                    }
+                  }}
+                >
+                  {catOptions.map((catId) => <MenuItem key={catId} value={catId}>{catLabel(catId)}</MenuItem>)}
+                </Select>
+              </FormControl>
+            </Grid>
+          </Grid>
+        </Paper>
+      </Box>
+    );
+  };
 
   const renderIdentity = () => (
     <Grid container spacing={2}>
@@ -1183,6 +1490,29 @@ export default function App() {
   const renderRelationships = () => (
     <Box sx={{ display: 'grid', gap: 2 }}>
       {Object.keys(FIELD_GROUPS).filter((group) => group === 'Relationships').map(renderFieldGroup)}
+      {document && document.cats.length > 0 && (
+        <FamilyTree
+          cats={document.cats}
+          selectedCatId={selectedCatId}
+          focusSelectedCat
+          allowShowAll={false}
+          onSelectCat={setSelectedCatId}
+          displayCatLabel={displayCatLabel}
+          roleForCat={(catId) => String(clanMetadata?.leader ?? '') === catId
+            ? 'Leader'
+            : String(clanMetadata?.deputy ?? '') === catId
+              ? 'Deputy'
+              : String(clanMetadata?.med_cat ?? '') === catId
+                ? 'Medicine cat'
+                : null}
+          specialConditionForCat={specialConditionForCat}
+          isDeadCat={(cat) => isDeadCat(cat)}
+          poseForCat={(cat) => {
+            const [, poseField] = lifeStageForMoons(cat.moons);
+            return typeof cat[poseField] === 'string' ? cat[poseField] : undefined;
+          }}
+        />
+      )}
     </Box>
   );
 
@@ -1291,6 +1621,10 @@ export default function App() {
           </Paper>
         </Box>
       );
+    }
+
+    if (selectedFile === 'family_tree') {
+      return renderFamilyTree();
     }
 
     if (selectedFile === 'names') {
@@ -1643,6 +1977,7 @@ export default function App() {
         </Box>
       );
     }
+    if (selectedFile === 'clan_attributes') return renderClanAttributes();
     if (selectedFile !== 'clan_cats') return <Typography>That file editor is not available yet.</Typography>;
 
     return (
@@ -1673,8 +2008,11 @@ export default function App() {
                 >
                   {catList.length === 0 ? (
                     <MenuItem value="" disabled>No cats loaded</MenuItem>
-                  ) : catList.map((cat) => (
+                  ) : orderedCatList.map((cat) => (
                     <MenuItem key={String(cat.ID)} value={String(cat.ID)}>
+                      {isDeadCat(cat) ? '☠ ' : ''}
+                      {String(clanMetadata?.leader ?? '') === String(cat.ID) ? '★ ' : ''}
+                      {String(clanMetadata?.med_cat ?? '') === String(cat.ID) ? '+ ' : ''}
                       {displayCatLabel(String(cat.ID))}
                     </MenuItem>
                   ))}
@@ -1734,7 +2072,7 @@ export default function App() {
                   >
                     <MenuItem value="" disabled>Select a clan</MenuItem>
                     {clans.map((clan) => (
-                      <MenuItem key={clan.path} value={clan.path}>{clan.name}</MenuItem>
+                      <MenuItem key={clan.path} value={clan.path}>{clan.name} ({clan.gameVersion})</MenuItem>
                     ))}
                   </Select>
                 </FormControl>
@@ -1849,6 +2187,17 @@ export default function App() {
               </ListItem>
               <ListItem disablePadding>
                 <ListItemButton
+                  selected={selectedFile === 'family_tree'}
+                  onClick={() => {
+                    setSelectedFile('family_tree');
+                    setOpen(false);
+                  }}
+                >
+                  <ListItemText primary="Family tree" secondary="Parent and lineage view" />
+                </ListItemButton>
+              </ListItem>
+              <ListItem disablePadding>
+                <ListItemButton
                   selected={selectedFile === 'clan_cats'}
                   onClick={() => {
                     setSelectedFile('clan_cats');
@@ -1867,6 +2216,17 @@ export default function App() {
                   }}
                 >
                   <ListItemText primary="Names" secondary="dicts/names/names.json" />
+                </ListItemButton>
+              </ListItem>
+              <ListItem disablePadding>
+                <ListItemButton
+                  selected={selectedFile === 'clan_attributes'}
+                  onClick={() => {
+                    setSelectedFile('clan_attributes');
+                    setOpen(false);
+                  }}
+                >
+                  <ListItemText primary="Clan attributes" secondary="clan.json" />
                 </ListItemButton>
               </ListItem>
               <ListItem disablePadding>

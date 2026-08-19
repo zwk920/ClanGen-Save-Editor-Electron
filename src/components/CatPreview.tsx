@@ -1,6 +1,7 @@
 import { Box, Typography } from '@mui/material';
 import { useEffect, useRef, useState } from 'react';
 import { useEditorStore } from '../store/editorStore';
+import { afterlifeStateForCat } from '../model/afterlife';
 import spriteIndex from './catRenderer/assets/spritesIndex.json';
 import poseSpriteData from './catRenderer/assets/pose_sprite_data.json';
 import peltInfo from './catRenderer/assets/peltInfo.json';
@@ -186,8 +187,18 @@ async function drawCat(canvas: HTMLCanvasElement, resourceDirPath: string | null
   const scars = Array.isArray(cat.scars) ? cat.scars.filter((scar): scar is string => typeof scar === 'string') : [];
   const scarInfo = peltInfo as { scars1: string[]; scars2: string[]; scars3: string[]; plant_accessories: string[]; wild_accessories: string[] };
   for (const scar of scars) if (scarInfo.scars1.includes(scar) || scarInfo.scars3.includes(scar)) await drawSprite(context, resourceDirPath, `scars${scar}`, poseIndex);
-  await drawSprite(context, resourceDirPath, 'lineart', poseIndex);
+  const afterlifeState = afterlifeStateForCat(cat);
+  const isLifegenResourcePack = resourceDirPath?.toLowerCase().includes('lifegen') ?? false;
+  const lineart = afterlifeState === 'starclan'
+    ? 'lineart_sc'
+    : afterlifeState === 'dark_forest'
+      ? 'lineart_df'
+      : afterlifeState === 'unknown_residence'
+        ? isLifegenResourcePack ? 'lifegen_lineart_ur' : 'lineart_ur'
+        : 'lineart';
+  await drawSprite(context, resourceDirPath, lineart, poseIndex);
   await drawSprite(context, resourceDirPath, `skin${String(cat.skin ?? 'BLACK')}`, poseIndex);
+  if (afterlifeState === 'starclan') await drawSprite(context, resourceDirPath, 'line_sc_overlay', poseIndex);
   for (const scar of scars) if (scarInfo.scars2.includes(scar)) await drawMissingScar(context, resourceDirPath, `scars_missing_part${scar}`, poseIndex);
 
   const accessories = Array.isArray(cat.accessory) ? cat.accessory.filter((item): item is string => typeof item === 'string') : [];

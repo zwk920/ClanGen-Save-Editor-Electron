@@ -11,6 +11,7 @@ import {
 export interface DiscoveredClan {
   name: string;
   path: string;
+  gameVersion: string;
 }
 
 interface EditorState {
@@ -36,6 +37,7 @@ interface EditorState {
   openSaveFile: () => Promise<void>;
   openResourceDir: () => Promise<void>;
   saveDocument: () => Promise<void>;
+  updateClanMetadata: (patch: Record<string, unknown>) => void;
   loadNamesFile: () => Promise<void>;
   saveNamesFile: (contents: string) => Promise<void>;
   setNamesJson: (contents: string) => void;
@@ -103,7 +105,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
   selectClan: async (clanPath) => {
     const clan = get().clans.find((entry) => entry.path === clanPath);
     if (!clan) return;
-    set({ selectedClanPath: clanPath, openingFile: true, status: `Reading ${clan.name}/clan_cats.json...` });
+    set({ selectedClanPath: clanPath, openingFile: true, status: `Reading ${clan.name} (${clan.gameVersion})/clan_cats.json...` });
     try {
       const fileReference = await window.electronFileSystem.openClan(clanPath);
       await get().loadDocument(fileReference);
@@ -126,7 +128,7 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
         return;
       }
       const firstClan = clans[0];
-      set({ selectedClanPath: firstClan.path, status: `Reading ${firstClan.name}/clan_cats.json...` });
+      set({ selectedClanPath: firstClan.path, status: `Reading ${firstClan.name} (${firstClan.gameVersion})/clan_cats.json...` });
       const fileReference = await window.electronFileSystem.openClan(firstClan.path);
       await get().loadDocument(fileReference);
     } catch (error) {
@@ -189,10 +191,18 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     }
 
     try {
-      const result = await window.electronFileSystem.saveClanFiles(currentSaveFileReference.filePath, document.cats);
+      const result = await window.electronFileSystem.saveClanFiles(
+        currentSaveFileReference.filePath,
+        document.cats,
+        clanMetadataReference?.contents ?? null,
+      );
+      const savedMetadataReference = clanMetadataReference
+        ? { ...clanMetadataReference, contents: clanMetadataReference.contents }
+        : null;
       document.dirty = false;
       set({
         document,
+        clanMetadataReference: savedMetadataReference,
         saveFileReference: { ...currentSaveFileReference, contents: JSON.stringify(document.cats, null, 2) + '\n' },
         status: `Saved ${document.cats.length} cats to ${currentSaveFileReference.fileName}${result.metadataFileName ? ` and ${result.metadataFileName}` : ''}`,
         dirty: false,
@@ -200,6 +210,18 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     } catch (error) {
       const message = error instanceof Error ? error.message : 'The file could not be saved.';
       set({ status: `Save failed: ${message}` });
+    }
+  },
+
+  updateClanMetadata: (patch) => {
+    const currentReference = get().clanMetadataReference;
+    if (!currentReference) return;
+    try {
+      const current = JSON.parse(currentReference.contents) as Record<string, unknown>;
+      const contents = JSON.stringify({ ...current, ...patch }, null, 2) + '\n';
+      set({ clanMetadataReference: { ...currentReference, contents }, dirty: true });
+    } catch {
+      set({ status: 'Clan metadata could not be updated because it is not valid JSON.' });
     }
   },
 
