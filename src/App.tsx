@@ -260,6 +260,7 @@ export default function App() {
   const [clanCatsJsonDraft, setClanCatsJsonDraft] = useState('');
   const [clanCatsJsonError, setClanCatsJsonError] = useState<string | null>(null);
   const [previousPeltNames, setPreviousPeltNames] = useState<Record<string, string>>({});
+  const [familyTreeFocusCatId, setFamilyTreeFocusCatId] = useState<string | null>(null);
 
   const document = useEditorStore((state) => state.document);
   const selectedCatId = useEditorStore((state) => state.selectedCatId);
@@ -503,8 +504,7 @@ export default function App() {
 
   const displayCatLabel = (catId: string): string => {
     const cat = document?.getCat(catId);
-    const name = displayCatName(cat);
-    return `${name} (${catId})`;
+    return displayCatName(cat);
   };
 
   const specialConditionForCat = (cat: Record<string, any> | null): string | null => {
@@ -1122,6 +1122,12 @@ export default function App() {
       <FamilyTree
         cats={document.cats}
         selectedCatId={selectedCatId}
+        focusCatId={familyTreeFocusCatId}
+        onDoubleClickCat={(catId) => {
+          setSelectedCatId(catId);
+          setTabIndex(0);
+          setSelectedFile('clan_cats');
+        }}
         onSelectCat={setSelectedCatId}
         displayCatLabel={displayCatLabel}
         roleForCat={(catId) => String(clanMetadata?.leader ?? '') === catId
@@ -2022,11 +2028,24 @@ export default function App() {
           </Tooltip>
         </Stack>
         <Paper sx={{ p: 1, flexShrink: 0 }}>
-          <Tabs value={tabIndex} onChange={(_, next) => setTabIndex(next)} variant="scrollable" scrollButtons="auto">
-            {tabLabels.map((label) => (
-              <Tab key={label} label={label} />
-            ))}
-          </Tabs>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Tabs sx={{ flexGrow: 1, minWidth: 0 }} value={tabIndex} onChange={(_, next) => setTabIndex(next)} variant="scrollable" scrollButtons="auto">
+              {tabLabels.map((label) => (
+                <Tab key={label} label={label} />
+              ))}
+            </Tabs>
+            <Button
+              variant="outlined"
+              onClick={() => {
+                setFamilyTreeFocusCatId(selectedCatId);
+                setSelectedFile('family_tree');
+              }}
+              disabled={!selectedCatId}
+              sx={{ flexShrink: 0 }}
+            >
+              Show in Family Tree
+            </Button>
+          </Stack>
         </Paper>
         {tabIndex === 2 ? (
           <Box sx={{ display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr)', gap: 1, minHeight: 0 }}>

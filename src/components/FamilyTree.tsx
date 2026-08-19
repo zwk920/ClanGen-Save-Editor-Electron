@@ -10,7 +10,9 @@ interface FamilyTreeProps {
   cats: Cat[];
   selectedCatId: string | null;
   focusSelectedCat?: boolean;
+  focusCatId?: string | null;
   allowShowAll?: boolean;
+  onDoubleClickCat?: (catId: string) => void;
   onSelectCat: (catId: string) => void;
   displayCatLabel: (catId: string) => string;
   roleForCat: (catId: string) => string | null;
@@ -26,14 +28,23 @@ const rowGap = 20;
 const canvasPadding = 40;
 const deadCatStateOrder = ['starclan', 'unknown_residence', 'dark_forest'];
 
+const ageGroupForMoons = (moonsValue: unknown): string => {
+  const moons = Number(moonsValue);
+  if (!Number.isFinite(moons) || moons <= 0) return 'Newborn';
+  if (moons < 6) return 'Kitten';
+  if (moons < 12) return 'Adolescent';
+  if (moons < 120) return 'Adult';
+  return 'Senior';
+};
+
 const edgeStyle: Record<FamilyEdgeKind, { stroke: string; dash?: string; label: string }> = {
   parent: { stroke: '#536dfe', label: 'Biological parent' },
   adoptive: { stroke: '#00897b', dash: '8 5', label: 'Adoptive parent' },
   mate: { stroke: '#d84315', dash: '3 5', label: 'Mate' },
 };
 
-export function FamilyTree({ cats, selectedCatId, focusSelectedCat = false, allowShowAll = true, onSelectCat, displayCatLabel, roleForCat, specialConditionForCat, poseForCat, isDeadCat }: FamilyTreeProps): JSX.Element {
-  const [focusedCatId, setFocusedCatId] = useState<string | null>(focusSelectedCat ? selectedCatId : null);
+export function FamilyTree({ cats, selectedCatId, focusSelectedCat = false, focusCatId = null, allowShowAll = true, onDoubleClickCat, onSelectCat, displayCatLabel, roleForCat, specialConditionForCat, poseForCat, isDeadCat }: FamilyTreeProps): JSX.Element {
+  const [focusedCatId, setFocusedCatId] = useState<string | null>(focusCatId ?? (focusSelectedCat ? selectedCatId : null));
   const graph = useMemo(() => buildFamilyGraph(cats, focusedCatId), [cats, focusedCatId]);
   const nodeRefs = useRef(new Map<string, HTMLButtonElement>());
   const layout = useMemo(() => {
@@ -131,6 +142,10 @@ export function FamilyTree({ cats, selectedCatId, focusSelectedCat = false, allo
   }, [focusSelectedCat, selectedCatId]);
 
   useEffect(() => {
+    if (focusCatId) setFocusedCatId(focusCatId);
+  }, [focusCatId]);
+
+  useEffect(() => {
     if (!focusedCatId) return;
     nodeRefs.current.get(focusedCatId)?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
   }, [focusedCatId, graph.nodes]);
@@ -190,6 +205,7 @@ export function FamilyTree({ cats, selectedCatId, focusSelectedCat = false, allo
             const position = nodePositions.get(node.id)!;
             const role = roleForCat(node.id);
             const dead = isDeadCat(node.cat);
+            const specialCondition = specialConditionForCat(node.cat);
             return (
               <Paper
                 key={node.id}
@@ -203,6 +219,7 @@ export function FamilyTree({ cats, selectedCatId, focusSelectedCat = false, allo
                   setFocusedCatId(node.id);
                   onSelectCat(node.id);
                 }}
+                onDoubleClick={() => onDoubleClickCat?.(node.id)}
                 variant="outlined"
                 sx={{
                   position: 'absolute', left: position.x, top: position.y, width: nodeWidth, height: nodeHeight,
@@ -217,9 +234,11 @@ export function FamilyTree({ cats, selectedCatId, focusSelectedCat = false, allo
                   <CatPreview cat={node.cat} poseName={poseForCat(node.cat)} size={84} />
                   <Box sx={{ minWidth: 0 }}>
                     <Typography variant="subtitle2" noWrap>{displayCatLabel(node.id)}</Typography>
-                    <Typography variant="caption" color="text.secondary" display="block" noWrap>ID: {node.id}</Typography>
+                    <Typography variant="caption" color="text.secondary" display="block" noWrap>
+                      {ageGroupForMoons(node.cat.moons)}
+                    </Typography>
                     {role && <Chip label={role} size="small" color="primary" sx={{ mt: 1, maxWidth: '100%' }} />}
-                    {!role && specialConditionForCat(node.cat) && <Chip label={specialConditionForCat(node.cat)} size="small" variant="outlined" sx={{ mt: 1, maxWidth: '100%' }} />}
+                    {!role && specialCondition && specialCondition !== 'Kitten' && <Chip label={specialCondition} size="small" variant="outlined" sx={{ mt: 1, maxWidth: '100%' }} />}
                     {dead && <Chip label="Dead" size="small" color="error" sx={{ mt: 1, maxWidth: '100%' }} />}
                   </Box>
                 </Stack>
