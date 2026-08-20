@@ -26,6 +26,8 @@ import {
   ListItemText,
   MenuItem,
   Paper,
+  Radio,
+  RadioGroup,
   Select,
   Stack,
   Tab,
@@ -37,6 +39,8 @@ import {
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import MenuIcon from '@mui/icons-material/Menu';
+import RedoIcon from '@mui/icons-material/Redo';
+import UndoIcon from '@mui/icons-material/Undo';
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { useEditorStore } from './store/editorStore';
 import {
@@ -50,12 +54,66 @@ import {
   labelFor,
 } from './model/schema';
 import { optionsForField } from './services/resourceCatalog';
-import { FACET_NAMES } from './model/catDocument';
+import { FACET_NAMES, sanitizeImportedCat } from './model/catDocument';
+import { copyTextToClipboard, readTextFromClipboard } from './services/fileSystemAccess';
 import { CatPreview } from './components/CatPreview';
 import { FamilyTree } from './components/FamilyTree';
 import { afterlifeStateForCat, isDeadCat as isDeadCatByBackstory } from './model/afterlife';
+import { createDefaultRelationshipEntry } from './model/relationships';
+import type { FamilyRelationshipCommand, FamilyRelationshipMutationResult } from './model/familyRelationshipMutation';
 
-const tabLabels = ['Overview', 'Identity', 'Appearance', 'Relationships', 'Skills', 'Faith', 'JSON', 'Validation'];
+const tabLabels = ['Overview', 'Identity', 'Appearance', 'Relationships', 'Skills', 'Faith', 'Conditions', 'JSON', 'Validation'];
+const TAB_TOOLTIPS: Record<string, string> = {
+  Overview: 'Quick summary of the selected cat, including core status details.',
+  Identity: 'Name, age, gender, rank, and core identity fields.',
+  Appearance: 'Pelt, colors, sprites, markings, scars, and accessories.',
+  Relationships: 'Parents, mates, mentors, and one-directional relationship stats.',
+  Skills: 'Skill paths, talents, and related progression fields.',
+  Faith: 'Beliefs, former beliefs, and spiritual alignment values.',
+  Conditions: 'Illnesses, injuries, permanent conditions, and related details.',
+  JSON: 'Direct JSON editor for the selected cat record.',
+  Validation: 'Schema and data checks for the selected cat.',
+};
+const RELATIONSHIP_FIELD_RANGES: Record<string, [number, number]> = {
+  romance: [0, 100],
+  like: [-100, 100],
+  respect: [-100, 100],
+  trust: [-100, 100],
+  comfort: [-100, 100],
+};
+const RELATIONSHIP_FIELD_DESCRIPTIONS: Record<string, string> = {
+  romance: 'Romantic interest this cat has in the target cat, from 0 (none) to 100 (full).',
+  like: 'How much this cat likes the target cat, from -100 (dislike) to 100 (like).',
+  respect: 'How much this cat respects the target cat, from -100 (disrespect) to 100 (respect).',
+  trust: 'How much this cat trusts the target cat, from -100 (distrust) to 100 (trust).',
+  comfort: 'How comfortable this cat is around the target cat, from -100 to 100.',
+};
+const CONDITION_SECTIONS = [
+  { key: 'illnesses', label: 'Illnesses', addLabel: 'Add illness' },
+  { key: 'injuries', label: 'Injuries', addLabel: 'Add injury' },
+  { key: 'permanent conditions', label: 'Permanent conditions', addLabel: 'Add permanent condition' },
+] as const;
+type ConditionSection = (typeof CONDITION_SECTIONS)[number]['key'];
+const CONDITION_OPTION_FIELDS: Record<ConditionSection, string> = {
+  illnesses: 'condition_illness',
+  injuries: 'condition_injury',
+  'permanent conditions': 'condition_permanent',
+};
+const CONDITION_DEFINITION_TYPES: Record<ConditionSection, string> = {
+  illnesses: 'illness',
+  injuries: 'injury',
+  'permanent conditions': 'permanent',
+};
+function conditionAgeForMoons(moonsValue: unknown): string {
+  const moons = Number(moonsValue);
+  if (!Number.isFinite(moons) || moons <= 0) return 'newborn';
+  if (moons < 6) return 'kitten';
+  if (moons < 12) return 'adolescent';
+  if (moons < 48) return 'young adult';
+  if (moons < 96) return 'adult';
+  if (moons < 120) return 'senior adult';
+  return 'senior';
+}
 const lifeStageSprites = [
   ['Newborn', 'sprite_newborn'],
   ['Kitten', 'sprite_kitten'],
@@ -255,10 +313,15 @@ export default function App() {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
   const [bulkDeleteIds, setBulkDeleteIds] = useState<string[]>([]);
+  const [selectedRelationshipTargetId, setSelectedRelationshipTargetId] = useState<string | null>(null);
   const [namesDraft, setNamesDraft] = useState<Record<string, any> | null>(null);
   const [namesDraftDirty, setNamesDraftDirty] = useState(false);
   const [clanCatsJsonDraft, setClanCatsJsonDraft] = useState('');
   const [clanCatsJsonError, setClanCatsJsonError] = useState<string | null>(null);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [importDraftText, setImportDraftText] = useState('');
+  const [importMode, setImportMode] = useState<'new' | 'overwrite'>('new');
+  const [importError, setImportError] = useState<string | null>(null);
   const [previousPeltNames, setPreviousPeltNames] = useState<Record<string, string>>({});
   const [familyTreeFocusCatId, setFamilyTreeFocusCatId] = useState<string | null>(null);
 
@@ -276,6 +339,13 @@ export default function App() {
   const clanMetadataReference = useEditorStore((state) => state.clanMetadataReference);
   const namesJson = useEditorStore((state) => state.namesJson);
   const namesFileDirty = useEditorStore((state) => state.namesFileDirty);
+  const conditionResourceFiles = useEditorStore((state) => state.conditionResourceFiles);
+  const selectedConditionResourceFile = useEditorStore((state) => state.selectedConditionResourceFile);
+  const conditionResourceDrafts = useEditorStore((state) => state.conditionResourceDrafts);
+  const conditionResourceDirtyFiles = useEditorStore((state) => state.conditionResourceDirtyFiles);
+  const conditionFiles = useEditorStore((state) => state.conditionFiles);
+  const relationshipFiles = useEditorStore((state) => state.relationshipFiles);
+  const updateRelationshipFile = useEditorStore((state) => state.updateRelationshipFile);
   const clans = useEditorStore((state) => state.clans);
   const selectedClanPath = useEditorStore((state) => state.selectedClanPath);
   const discoverClans = useEditorStore((state) => state.discoverClans);
@@ -283,9 +353,14 @@ export default function App() {
   const openSaveFile = useEditorStore((state) => state.openSaveFile);
   const openResourceDir = useEditorStore((state) => state.openResourceDir);
   const saveDocument = useEditorStore((state) => state.saveDocument);
+  const updateConditionFile = useEditorStore((state) => state.updateConditionFile);
   const updateClanMetadata = useEditorStore((state) => state.updateClanMetadata);
   const saveNamesFile = useEditorStore((state) => state.saveNamesFile);
   const setNamesJson = useEditorStore((state) => state.setNamesJson);
+  const loadConditionResourceFiles = useEditorStore((state) => state.loadConditionResourceFiles);
+  const selectConditionResourceFile = useEditorStore((state) => state.selectConditionResourceFile);
+  const setConditionResourceDraft = useEditorStore((state) => state.setConditionResourceDraft);
+  const saveConditionResourceFile = useEditorStore((state) => state.saveConditionResourceFile);
   const validate = useEditorStore((state) => state.validate);
   const addCat = useEditorStore((state) => state.addCat);
   const duplicateSelectedCat = useEditorStore((state) => state.duplicateSelectedCat);
@@ -293,6 +368,23 @@ export default function App() {
   const deleteCats = useEditorStore((state) => state.deleteCats);
   const setSelectedCatId = useEditorStore((state) => state.setSelectedCatId);
   const updateCat = useEditorStore((state) => state.updateCat);
+  const applyFamilyRelationshipCommand = useEditorStore((state) => state.applyFamilyRelationshipCommand);
+  const setMateStatus = useEditorStore((state) => state.setMateStatus);
+  const undo = useEditorStore((state) => state.undo);
+  const redo = useEditorStore((state) => state.redo);
+  const canUndo = useEditorStore((state) => state.undoHistory.length > 0);
+  const canRedo = useEditorStore((state) => state.redoHistory.length > 0);
+  const replaceCat = useEditorStore((state) => state.replaceCat);
+
+  const selectedConditions = useMemo<Record<string, unknown>>(
+    () => selectedCatId ? conditionFiles[selectedCatId] ?? {} : {},
+    [conditionFiles, selectedCatId],
+  );
+
+  const selectedRelationships = useMemo<Record<string, unknown>[]>(
+    () => selectedCatId ? relationshipFiles[selectedCatId] ?? [] : [],
+    [relationshipFiles, selectedCatId],
+  );
 
   const catList = document?.cats ?? [];
 
@@ -320,6 +412,10 @@ export default function App() {
     setNamesDraft(parsedNamesFromStore);
     setNamesDraftDirty(false);
   }, [parsedNamesFromStore]);
+
+  useEffect(() => {
+    setSelectedRelationshipTargetId(null);
+  }, [selectedCatId]);
 
   useEffect(() => {
     if (tabIndex === 6) {
@@ -350,6 +446,21 @@ export default function App() {
     ? parsedNames.special_suffixes as Record<string, string>
     : {};
   const serializedNamesDraft = parsedNames ? JSON.stringify(parsedNames, null, 2) + '\n' : namesJson;
+  const selectedConditionResourceDraft = selectedConditionResourceFile
+    ? conditionResourceDrafts[selectedConditionResourceFile] ?? ''
+    : '';
+  const conditionResourceJsonError = useMemo(() => {
+    if (!selectedConditionResourceDraft) return null;
+    try {
+      JSON.parse(selectedConditionResourceDraft);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Invalid JSON.';
+    }
+  }, [selectedConditionResourceDraft]);
+  const selectedConditionResourceDirty = selectedConditionResourceFile
+    ? conditionResourceDirtyFiles.includes(selectedConditionResourceFile)
+    : false;
   const updateNamesDraft = (next: Record<string, any>) => {
     setNamesDraft(next);
     setNamesDraftDirty(true);
@@ -474,6 +585,12 @@ export default function App() {
     updateCat(selectedCatId, { [field]: value });
   };
 
+  const handleFamilyRelationshipCommand = (command: FamilyRelationshipCommand): FamilyRelationshipMutationResult => (
+    command.relationship === 'mate'
+      ? setMateStatus(command.sourceId, command.targetId, command.operation === 'add')
+      : applyFamilyRelationshipCommand(command)
+  );
+
   const handleTortieChange = (enabled: boolean) => {
     if (!selectedCatId) return;
     if (enabled) {
@@ -537,7 +654,25 @@ export default function App() {
     isDeadCatByBackstory(cat)
   );
 
-  const orderedCatList = [...catList].sort((a, b) => Number(isDeadCat(a)) - Number(isDeadCat(b)));
+  const deadCatStateOrder = ['starclan', 'unknown_residence', 'dark_forest'];
+  const mediatorIds = new Set(Array.isArray(clanMetadata?.mediated) ? clanMetadata.mediated.map(String) : []);
+  const selectorPriorityFor = (cat: Record<string, any>): number => {
+    const catId = String(cat.ID ?? '');
+    if (String(clanMetadata?.your_cat ?? '') === catId) return 0;
+    if (String(clanMetadata?.leader ?? '') === catId) return 1;
+    if (String(clanMetadata?.deputy ?? '') === catId) return 2;
+    if (String(clanMetadata?.med_cat ?? '') === catId) return 3;
+    if (mediatorIds.has(catId)) return 4;
+    return 5;
+  };
+  const orderedCatList = [...catList].sort((a, b) => {
+    const priorityOrder = selectorPriorityFor(a) - selectorPriorityFor(b);
+    if (priorityOrder !== 0) return priorityOrder;
+    const deadOrder = Number(isDeadCat(a)) - Number(isDeadCat(b));
+    if (deadOrder !== 0) return deadOrder;
+    if (!isDeadCat(a)) return 0;
+    return deadCatStateOrder.indexOf(afterlifeStateForCat(a)) - deadCatStateOrder.indexOf(afterlifeStateForCat(b));
+  });
 
   const displayCatName = (cat: Record<string, any> | undefined): string => {
     if (!cat) return 'Unnamed cat';
@@ -845,7 +980,13 @@ export default function App() {
             label={label}
             onChange={(event) => {
               const nextValue = event.target.value;
-              handleFieldChange(field, typeof nextValue === 'string' ? nextValue.split(',') : nextValue);
+              const nextIds = typeof nextValue === 'string' ? nextValue.split(',') : nextValue;
+              if (field === 'mate' && selectedCatId) {
+                for (const id of nextIds.filter((catId) => !selectedValues.includes(catId))) setMateStatus(selectedCatId, id, true);
+                for (const id of selectedValues.filter((catId) => !nextIds.includes(catId))) setMateStatus(selectedCatId, id, false);
+                return;
+              }
+              handleFieldChange(field, nextIds);
             }}
             renderValue={(selected) => (selected as string[]).map((id) => displayCatLabel(id)).join(', ')}
           >
@@ -1129,6 +1270,7 @@ export default function App() {
           setSelectedFile('clan_cats');
         }}
         onSelectCat={setSelectedCatId}
+        onRelationshipCommand={handleFamilyRelationshipCommand}
         displayCatLabel={displayCatLabel}
         roleForCat={(catId) => String(clanMetadata?.leader ?? '') === catId
           ? 'Leader'
@@ -1493,34 +1635,136 @@ export default function App() {
     </Box>
   );
 
-  const renderRelationships = () => (
-    <Box sx={{ display: 'grid', gap: 2 }}>
-      {Object.keys(FIELD_GROUPS).filter((group) => group === 'Relationships').map(renderFieldGroup)}
-      {document && document.cats.length > 0 && (
-        <FamilyTree
-          cats={document.cats}
-          selectedCatId={selectedCatId}
-          focusSelectedCat
-          allowShowAll={false}
-          onSelectCat={setSelectedCatId}
-          displayCatLabel={displayCatLabel}
-          roleForCat={(catId) => String(clanMetadata?.leader ?? '') === catId
-            ? 'Leader'
-            : String(clanMetadata?.deputy ?? '') === catId
-              ? 'Deputy'
-              : String(clanMetadata?.med_cat ?? '') === catId
-                ? 'Medicine cat'
-                : null}
-          specialConditionForCat={specialConditionForCat}
-          isDeadCat={(cat) => isDeadCat(cat)}
-          poseForCat={(cat) => {
-            const [, poseField] = lifeStageForMoons(cat.moons);
-            return typeof cat[poseField] === 'string' ? cat[poseField] : undefined;
-          }}
-        />
-      )}
-    </Box>
-  );
+  const renderRelationships = () => {
+    const relatedCatIds = new Set(selectedRelationships.map((entry) => String(entry.cat_to_id)));
+    const addableCats = catList.filter((cat) => String(cat.ID) !== selectedCatId && !isDeadCat(cat) && !relatedCatIds.has(String(cat.ID)));
+
+    const updateEntry = (targetCatId: string, patch: Record<string, unknown>) => {
+      saveRelationshipEntries(selectedRelationships.map((entry) => (
+        String(entry.cat_to_id) === targetCatId ? { ...entry, ...patch } : entry
+      )));
+    };
+
+    const removeEntry = (targetCatId: string) => {
+      saveRelationshipEntries(selectedRelationships.filter((entry) => String(entry.cat_to_id) !== targetCatId));
+    };
+
+    return (
+      <Box sx={{ display: 'grid', gap: 2 }}>
+        {Object.keys(FIELD_GROUPS).filter((group) => group === 'Relationships').map(renderFieldGroup)}
+        {document && document.cats.length > 0 && (
+          <FamilyTree
+            cats={document.cats}
+            selectedCatId={selectedCatId}
+            focusSelectedCat
+            autoScrollToFocus={false}
+            allowShowAll={false}
+            onSelectCat={setSelectedCatId}
+            onRelationshipCommand={handleFamilyRelationshipCommand}
+            displayCatLabel={displayCatLabel}
+            roleForCat={(catId) => String(clanMetadata?.leader ?? '') === catId
+              ? 'Leader'
+              : String(clanMetadata?.deputy ?? '') === catId
+                ? 'Deputy'
+                : String(clanMetadata?.med_cat ?? '') === catId
+                  ? 'Medicine cat'
+                  : null}
+            specialConditionForCat={specialConditionForCat}
+            isDeadCat={(cat) => isDeadCat(cat)}
+            poseForCat={(cat) => {
+              const [, poseField] = lifeStageForMoons(cat.moons);
+              return typeof cat[poseField] === 'string' ? cat[poseField] : undefined;
+            }}
+          />
+        )}
+        <Box sx={{ display: 'grid', gap: 1.5 }}>
+          <Stack direction="row" alignItems="center" spacing={1}>
+            <Typography variant="h6" sx={{ flexGrow: 1 }}>Relationship stats</Typography>
+            <Tooltip title="Choose an existing or new cat to view and edit this cat's one-directional relationship with them." arrow enterDelay={300}>
+              <span>
+                <Autocomplete
+                  sx={{ width: 260 }}
+                  options={[...selectedRelationships.map((entry) => String(entry.cat_to_id)), ...addableCats.map((cat) => String(cat.ID))]}
+                  getOptionLabel={(catId) => displayCatLabel(catId)}
+                  value={selectedRelationshipTargetId}
+                  onChange={(_, targetCatId) => {
+                    if (!targetCatId || !selectedCatId) {
+                      setSelectedRelationshipTargetId(null);
+                      return;
+                    }
+                    if (!relatedCatIds.has(targetCatId)) {
+                      saveRelationshipEntries([...selectedRelationships, createDefaultRelationshipEntry(selectedCatId, targetCatId)]);
+                    }
+                    setSelectedRelationshipTargetId(targetCatId);
+                  }}
+                  renderInput={(params) => <TextField {...params} size="small" label="Select relationship" />}
+                  disabled={!selectedCatId || (selectedRelationships.length === 0 && addableCats.length === 0)}
+                />
+              </span>
+            </Tooltip>
+          </Stack>
+          {(() => {
+            const entry = selectedRelationships.find((candidate) => String(candidate.cat_to_id) === selectedRelationshipTargetId);
+            if (!entry) return <Typography color="text.secondary">Select a cat above to view or edit their relationship stats.</Typography>;
+            const targetCatId = String(entry.cat_to_id);
+            return (
+              <Box sx={{ display: 'grid', gap: 1 }}>
+                <Stack direction="row" alignItems="center" spacing={1}>
+                  <Typography sx={{ flexGrow: 1 }} fontWeight="bold">{displayCatLabel(targetCatId)}</Typography>
+                  <Tooltip title="Whether these two cats are currently mates. Updates both cats' mate lists and relationship files together." arrow enterDelay={300}>
+                    <FormControlLabel
+                      control={<Checkbox checked={Boolean(entry.mates)} onChange={(event) => selectedCatId && setMateStatus(selectedCatId, targetCatId, event.target.checked)} />}
+                      label="Mates"
+                    />
+                  </Tooltip>
+                  <Tooltip title="Whether the selected cat considers the target cat family." arrow enterDelay={300}>
+                    <FormControlLabel
+                      control={<Checkbox checked={Boolean(entry.family)} onChange={(event) => updateEntry(targetCatId, { family: event.target.checked })} />}
+                      label="Family"
+                    />
+                  </Tooltip>
+                  <Tooltip title="Delete this cat's relationship entry with the target cat. Does not affect the target cat's own relationship file." arrow enterDelay={300}>
+                    <span><Button color="error" onClick={() => { removeEntry(targetCatId); setSelectedRelationshipTargetId(null); }}>Remove</Button></span>
+                  </Tooltip>
+                </Stack>
+                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', md: 'repeat(5, 1fr)' }, gap: 1 }}>
+                  {(['romance', 'like', 'respect', 'trust', 'comfort'] as const).map((statField) => {
+                    const [min, max] = RELATIONSHIP_FIELD_RANGES[statField];
+                    return (
+                      <Tooltip key={statField} title={RELATIONSHIP_FIELD_DESCRIPTIONS[statField]} arrow enterDelay={300}>
+                        <TextField
+                          size="small"
+                          type="number"
+                          label={labelFor(statField)}
+                          value={Number(entry[statField]) || 0}
+                          onChange={(event) => {
+                            const nextValue = Math.min(max, Math.max(min, Number(event.target.value) || 0));
+                            updateEntry(targetCatId, { [statField]: nextValue });
+                          }}
+                          inputProps={{ min, max }}
+                        />
+                      </Tooltip>
+                    );
+                  })}
+                </Box>
+                <Tooltip title="Read-only interaction history and which stats have left the neutral tier." arrow enterDelay={300}>
+                  <TextField
+                    fullWidth
+                    disabled
+                    multiline
+                    minRows={2}
+                    label="Log / no longer neutral"
+                    value={JSON.stringify({ log: entry.log ?? [], no_longer_neutral: entry.no_longer_neutral ?? [] }, null, 2)}
+                    sx={{ '& textarea': { fontFamily: 'monospace', fontSize: '0.8rem' } }}
+                  />
+                </Tooltip>
+              </Box>
+            );
+          })()}
+        </Box>
+      </Box>
+    );
+  };
 
   const renderSkills = () => (
     <Box sx={{ display: 'grid', gap: 2 }}>
@@ -1531,6 +1775,158 @@ export default function App() {
   const renderFaith = () => (
     <Box sx={{ display: 'grid', gap: 2 }}>
       {Object.keys(FIELD_GROUPS).filter((group) => group === 'Faith').map(renderFieldGroup)}
+    </Box>
+  );
+
+  const conditionEntriesFor = (section: ConditionSection): Record<string, unknown> => {
+    const value = selectedConditions[section];
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+  };
+
+  const saveConditionSection = (section: ConditionSection, entries: Record<string, unknown>) => {
+    if (!selectedCatId) return;
+    const nextConditions = { ...selectedConditions, [section]: entries };
+    const hasConditions = CONDITION_SECTIONS.some(({ key }) => Object.keys(
+      nextConditions[key] && typeof nextConditions[key] === 'object' && !Array.isArray(nextConditions[key])
+        ? nextConditions[key] as Record<string, unknown>
+        : {},
+    ).length > 0);
+    updateConditionFile(selectedCatId, hasConditions ? nextConditions : null);
+  };
+
+  const saveRelationshipEntries = (entries: Record<string, unknown>[]) => {
+    if (!selectedCatId) return;
+    updateRelationshipFile(selectedCatId, entries.length > 0 ? entries : null);
+  };
+
+  const conditionDetailsFromResource = (section: ConditionSection, name: string): Record<string, unknown> => {
+    const definition = resourceCatalog?.conditionDefinitions?.[CONDITION_DEFINITION_TYPES[section]]?.[name];
+    const source = definition ?? {};
+    const mortalityByAge = source.mortality;
+    const mortality = mortalityByAge && typeof mortalityByAge === 'object' && !Array.isArray(mortalityByAge)
+      ? Number((mortalityByAge as Record<string, unknown>)[conditionAgeForMoons(selectedCat?.moons)]) || 0
+      : 0;
+    const severity = typeof source.severity === 'string' ? source.severity : 'minor';
+    const risks = Array.isArray(source.risks) ? structuredClone(source.risks) : [];
+    const illnessInfectiousness = Array.isArray(source.illness_infectiousness) ? structuredClone(source.illness_infectiousness) : [];
+
+    if (section === 'illnesses') {
+      return {
+        severity,
+        mortality,
+        infectiousness: Number(source.infectiousness) || 0,
+        duration: Number(source.duration) || 1,
+        moon_start: 0,
+        risks,
+        event_triggered: false,
+      };
+    }
+    if (section === 'injuries') {
+      return {
+        severity,
+        mortality,
+        duration: Number(source.duration) || 1,
+        moon_start: 0,
+        illness_infectiousness: illnessInfectiousness,
+        risks,
+        complication: null,
+        cause_permanent: Array.isArray(source.cause_permanent) ? structuredClone(source.cause_permanent) : [],
+        event_triggered: false,
+      };
+    }
+    const bornWith = source.congenital === 'always';
+    return {
+      severity,
+      born_with: bornWith,
+      moons_until: bornWith ? Number(source.moons_until) || 0 : 0,
+      moon_start: 0,
+      mortality,
+      illness_infectiousness: illnessInfectiousness,
+      risks,
+      complication: null,
+      event_triggered: false,
+    };
+  };
+
+  const addCondition = (section: ConditionSection) => {
+    const entries = conditionEntriesFor(section);
+    const placeholderName = section === 'illnesses' ? 'new illness' : section === 'injuries' ? 'new injury' : 'new permanent condition';
+    const baseName = resourceCatalog?.options[CONDITION_OPTION_FIELDS[section]]?.find((option) => !(option in entries)) ?? placeholderName;
+    let name = baseName;
+    let number = 2;
+    while (name in entries) name = `${baseName} ${number++}`;
+    const details = conditionDetailsFromResource(section, name);
+    saveConditionSection(section, { ...entries, [name]: details });
+  };
+
+  const renderConditions = () => (
+    <Box sx={{ display: 'grid', gap: 3 }}>
+      {CONDITION_SECTIONS.map(({ key, label, addLabel }) => {
+        const entries = conditionEntriesFor(key);
+        return (
+          <Box key={key} sx={{ display: 'grid', gap: 1.5 }}>
+            <Stack direction="row" alignItems="center" spacing={1}>
+              <Typography variant="h6" sx={{ flexGrow: 1 }}>{label}</Typography>
+              <Tooltip title={`Add a new ${label.toLowerCase()} entry to the selected cat.`} arrow enterDelay={300}>
+                <span><Button variant="outlined" size="small" onClick={() => addCondition(key)} disabled={!selectedCatId || !resourceDirPath}>{addLabel}</Button></span>
+              </Tooltip>
+            </Stack>
+            {Object.entries(entries).length === 0 ? (
+              <Typography color="text.secondary">None</Typography>
+            ) : Object.entries(entries).map(([name, details]) => {
+              return (
+                <Box key={name} sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: 'minmax(220px, 0.35fr) minmax(0, 1fr) auto' }, gap: 1, alignItems: 'start', borderTop: 1, borderColor: 'divider', pt: 1.5 }}>
+                  <Tooltip title={`Choose which ${label.toLowerCase().replace(/s$/, '')} this entry represents.`} arrow enterDelay={300}>
+                    <Autocomplete
+                      options={optionsForField(
+                        resourceCatalog ?? { options: {}, groups: {}, traitRanges: {}, warnings: [], loadedFiles: [] },
+                        CONDITION_OPTION_FIELDS[key],
+                        name,
+                      )}
+                      value={name}
+                      onChange={(_, value) => {
+                        if (!value || value === name) return;
+                        const nextEntries = { ...entries, [value]: conditionDetailsFromResource(key, value) };
+                        delete nextEntries[name];
+                        saveConditionSection(key, nextEntries);
+                      }}
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          size="small"
+                          label="Condition"
+                        />
+                      )}
+                    />
+                  </Tooltip>
+                  <Tooltip title="Read-only condition details (severity, mortality, duration, risks, herbs) loaded from game resources." arrow enterDelay={300}>
+                    <TextField
+                      fullWidth
+                      disabled
+                      multiline
+                      minRows={5}
+                      label="Condition data"
+                      value={JSON.stringify(details, null, 2)}
+                      sx={{ '& textarea': { fontFamily: 'monospace', fontSize: '0.8rem' } }}
+                    />
+                  </Tooltip>
+                  <Tooltip title={`Remove this ${label.toLowerCase().replace(/s$/, '')} from the selected cat.`} arrow enterDelay={300}>
+                    <span>
+                      <Button color="error" onClick={() => {
+                        const nextEntries = { ...entries };
+                        delete nextEntries[name];
+                        saveConditionSection(key, nextEntries);
+                      }}>Remove</Button>
+                    </span>
+                  </Tooltip>
+                </Box>
+              );
+            })}
+          </Box>
+        );
+      })}
     </Box>
   );
 
@@ -1552,25 +1948,53 @@ export default function App() {
     <Box sx={{ display: 'grid', gap: 2 }}>
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }}>
         <Typography sx={{ flexGrow: 1 }} color="text.secondary">Selected cat JSON</Typography>
-        <Button
-          variant="contained"
-          disabled={!selectedCatId}
-          onClick={() => {
-            try {
-              if (!selectedCatId) return;
-              const parsed = JSON.parse(clanCatsJsonDraft);
-              if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-                throw new Error('The selected cat JSON must be an object.');
+        <Tooltip title="Copy the selected cat's JSON to your clipboard." arrow enterDelay={300}>
+          <span><Button
+            variant="outlined"
+            disabled={!selectedCat}
+            onClick={() => {
+              void copyTextToClipboard(JSON.stringify(selectedCat, null, 2)).then(() => {
+                setClanCatsJsonError(null);
+              });
+            }}
+          >
+            Copy Cat JSON
+          </Button></span>
+        </Tooltip>
+        <Tooltip title="Open a dialog to paste JSON and add a new cat or overwrite the selected cat." arrow enterDelay={300}>
+          <span><Button
+            variant="outlined"
+            onClick={() => {
+              setImportDraftText('');
+              setImportError(null);
+              setImportMode('new');
+              setImportDialogOpen(true);
+            }}
+          >
+            Import Cat from JSON
+          </Button></span>
+        </Tooltip>
+        <Tooltip title="Validate this editor content as JSON and apply it to the selected cat." arrow enterDelay={300}>
+          <span><Button
+            variant="contained"
+            disabled={!selectedCatId}
+            onClick={() => {
+              try {
+                if (!selectedCatId) return;
+                const parsed = JSON.parse(clanCatsJsonDraft);
+                if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                  throw new Error('The selected cat JSON must be an object.');
+                }
+                updateCat(selectedCatId, parsed);
+                setClanCatsJsonError(null);
+              } catch (error) {
+                setClanCatsJsonError(error instanceof Error ? error.message : 'The selected cat JSON could not be applied.');
               }
-              updateCat(selectedCatId, parsed);
-              setClanCatsJsonError(null);
-            } catch (error) {
-              setClanCatsJsonError(error instanceof Error ? error.message : 'The selected cat JSON could not be applied.');
-            }
-          }}
-        >
-          Apply JSON
-        </Button>
+            }}
+          >
+            Apply JSON
+          </Button></span>
+        </Tooltip>
       </Stack>
       {clanCatsJsonError && <Alert severity="error">{clanCatsJsonError}</Alert>}
       <TextField
@@ -1586,6 +2010,76 @@ export default function App() {
         }}
         sx={{ '& textarea': { fontFamily: 'monospace', fontSize: '0.85rem' } }}
       />
+
+      <Dialog open={importDialogOpen} onClose={() => setImportDialogOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>Import cat from JSON</DialogTitle>
+        <DialogContent sx={{ display: 'grid', gap: 2 }}>
+          <DialogContentText>
+            Paste a cat's JSON below to add it as a new cat or overwrite the currently selected cat. Relationship
+            fields (parents, mates, mentors, apprentices) are cleared on import since they refer to IDs from the
+            original clan.
+          </DialogContentText>
+          <Stack direction="row" spacing={2} alignItems="center">
+            <Button variant="outlined" onClick={() => { void readTextFromClipboard().then(setImportDraftText); }}>
+              Paste from Clipboard
+            </Button>
+            <RadioGroup
+              row
+              value={importMode}
+              onChange={(event) => setImportMode(event.target.value as 'new' | 'overwrite')}
+            >
+              <FormControlLabel value="new" control={<Radio />} label="Add as new cat" />
+              <FormControlLabel
+                value="overwrite"
+                control={<Radio />}
+                label="Overwrite selected cat"
+                disabled={!selectedCatId}
+              />
+            </RadioGroup>
+          </Stack>
+          {importError && <Alert severity="error">{importError}</Alert>}
+          <TextField
+            fullWidth
+            multiline
+            minRows={16}
+            placeholder="Paste cat JSON here."
+            value={importDraftText}
+            onChange={(event) => {
+              setImportDraftText(event.target.value);
+              setImportError(null);
+            }}
+            sx={{ '& textarea': { fontFamily: 'monospace', fontSize: '0.85rem' } }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setImportDialogOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              try {
+                const parsed = JSON.parse(importDraftText);
+                if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                  throw new Error('The pasted cat JSON must be an object.');
+                }
+                const sanitized = sanitizeImportedCat(parsed);
+                if (importMode === 'overwrite') {
+                  if (!selectedCatId) throw new Error('Select a cat to overwrite first.');
+                  replaceCat(selectedCatId, sanitized);
+                } else {
+                  addCat(sanitized);
+                }
+                setImportDialogOpen(false);
+                setImportDraftText('');
+                setImportError(null);
+              } catch (error) {
+                setImportError(error instanceof Error ? error.message : 'The pasted cat JSON could not be imported.');
+              }
+            }}
+          >
+            Import
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 
@@ -1602,8 +2096,10 @@ export default function App() {
       case 5:
         return renderFaith();
       case 6:
-        return renderJson();
+        return renderConditions();
       case 7:
+        return renderJson();
+      case 8:
         return renderValidation();
       default:
         return renderOverview();
@@ -1983,6 +2479,62 @@ export default function App() {
         </Box>
       );
     }
+    if (selectedFile === 'conditions') {
+      return (
+        <Box sx={{ display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr)', gap: 2, alignContent: 'start', minWidth: 0, minHeight: 0, height: '100%', overflow: 'hidden' }}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }}>
+            <Box sx={{ flexGrow: 1 }}>
+              <Typography variant="h5">Conditions</Typography>
+              <Typography variant="body2" color="text.secondary">dicts/conditions/**/*.json</Typography>
+            </Box>
+            <Button variant="outlined" onClick={() => { void loadConditionResourceFiles(); }} disabled={!resourceDirPath}>
+              Refresh files
+            </Button>
+            <Button
+              variant="contained"
+              onClick={() => { void saveConditionResourceFile(); }}
+              disabled={!resourceDirPath || !selectedConditionResourceFile || !selectedConditionResourceDirty || Boolean(conditionResourceJsonError)}
+            >
+              Save resource
+            </Button>
+          </Stack>
+          {!resourceDirPath ? (
+            <Alert severity="info">Select a ClanGen or LifeGen data folder to edit condition resources.</Alert>
+          ) : (
+            <Box sx={{ display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr)', gap: 2, minHeight: 0 }}>
+              <FormControl fullWidth size="small" disabled={conditionResourceFiles.length === 0}>
+                <InputLabel id="condition-resource-file-label">Condition resource</InputLabel>
+                <Select
+                  labelId="condition-resource-file-label"
+                  value={selectedConditionResourceFile}
+                  label="Condition resource"
+                  onChange={(event) => { void selectConditionResourceFile(String(event.target.value)); }}
+                >
+                  {conditionResourceFiles.length === 0 ? (
+                    <MenuItem value="" disabled>No condition JSON files found</MenuItem>
+                  ) : conditionResourceFiles.map((file) => (
+                    <MenuItem key={file} value={file}>{file.replace('dicts/conditions/', '')}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              <Box sx={{ minHeight: 0, overflow: 'auto', display: 'grid', gap: 1, alignContent: 'start' }}>
+                {conditionResourceJsonError && <Alert severity="error">{conditionResourceJsonError}</Alert>}
+                <TextField
+                  fullWidth
+                  multiline
+                  minRows={24}
+                  disabled={!selectedConditionResourceFile}
+                  placeholder="Choose a condition resource file."
+                  value={selectedConditionResourceDraft}
+                  onChange={(event) => setConditionResourceDraft(selectedConditionResourceFile, event.target.value)}
+                  sx={{ '& textarea': { fontFamily: 'monospace', fontSize: '0.85rem' } }}
+                />
+              </Box>
+            </Box>
+          )}
+        </Box>
+      );
+    }
     if (selectedFile === 'clan_attributes') return renderClanAttributes();
     if (selectedFile !== 'clan_cats') return <Typography>That file editor is not available yet.</Typography>;
 
@@ -2016,10 +2568,27 @@ export default function App() {
                     <MenuItem value="" disabled>No cats loaded</MenuItem>
                   ) : orderedCatList.map((cat) => (
                     <MenuItem key={String(cat.ID)} value={String(cat.ID)}>
-                      {isDeadCat(cat) ? '☠ ' : ''}
+                      {afterlifeStateForCat(cat) === 'starclan'
+                        ? <span style={{ color: '#fff', fontFamily: 'Segoe UI Symbol, sans-serif', marginRight: '0.25em' }}>{'\u2728\uFE0E'}</span>
+                        : afterlifeStateForCat(cat) === 'unknown_residence'
+                          ? <span style={{ color: '#fff', fontFamily: 'Segoe UI Symbol, sans-serif', marginRight: '0.25em' }}>{'🌫︎'}</span>
+                          : afterlifeStateForCat(cat) === 'dark_forest'
+                            ? <span style={{ color: '#fff', fontFamily: 'Segoe UI Symbol, sans-serif', marginRight: '0.25em' }}>{'💀︎'}</span>
+                            : ''}
                       {String(clanMetadata?.leader ?? '') === String(cat.ID) ? '★ ' : ''}
-                      {String(clanMetadata?.med_cat ?? '') === String(cat.ID) ? '+ ' : ''}
+                      {String(clanMetadata?.deputy ?? '') === String(cat.ID)
+                        ? <span style={{ color: '#fff', fontFamily: 'Segoe UI Symbol, sans-serif', marginRight: '0.25em' }}>{'\u272A\uFE0E'}</span>
+                        : ''}
+                      {String(clanMetadata?.med_cat ?? '') === String(cat.ID)
+                        ? <span style={{ color: '#fff', fontFamily: 'Segoe UI Symbol, sans-serif', marginRight: '0.25em' }}>{'\u2695\uFE0E'}</span>
+                        : ''}
+                      {Array.isArray(clanMetadata?.mediated) && clanMetadata.mediated.map(String).includes(String(cat.ID))
+                        ? <span style={{ color: '#fff', fontFamily: 'Segoe UI Symbol, sans-serif', marginRight: '0.25em' }}>{'\u2696\uFE0E'}</span>
+                        : ''}
                       {displayCatLabel(String(cat.ID))}
+                      {String(clanMetadata?.your_cat ?? '') === String(cat.ID)
+                        ? <span style={{ marginLeft: '0.25em' }}>(You)</span>
+                        : ''}
                     </MenuItem>
                   ))}
                 </Select>
@@ -2031,20 +2600,29 @@ export default function App() {
           <Stack direction="row" spacing={1} alignItems="center">
             <Tabs sx={{ flexGrow: 1, minWidth: 0 }} value={tabIndex} onChange={(_, next) => setTabIndex(next)} variant="scrollable" scrollButtons="auto">
               {tabLabels.map((label) => (
-                <Tab key={label} label={label} />
+                <Tab
+                  key={label}
+                  label={(
+                    <Tooltip title={TAB_TOOLTIPS[label] ?? label} arrow enterDelay={300}>
+                      <span>{label}</span>
+                    </Tooltip>
+                  )}
+                />
               ))}
             </Tabs>
-            <Button
-              variant="outlined"
-              onClick={() => {
-                setFamilyTreeFocusCatId(selectedCatId);
-                setSelectedFile('family_tree');
-              }}
-              disabled={!selectedCatId}
-              sx={{ flexShrink: 0 }}
-            >
-              Show in Family Tree
-            </Button>
+            <Tooltip title="Open the Family tree view focused on the currently selected cat." arrow enterDelay={300}>
+              <span><Button
+                variant="outlined"
+                onClick={() => {
+                  setFamilyTreeFocusCatId(selectedCatId);
+                  setSelectedFile('family_tree');
+                }}
+                disabled={!selectedCatId}
+                sx={{ flexShrink: 0 }}
+              >
+                Show in Family Tree
+              </Button></span>
+            </Tooltip>
           </Stack>
         </Paper>
         {tabIndex === 2 ? (
@@ -2106,11 +2684,21 @@ export default function App() {
               <span><Button
                 variant="contained"
                 color="secondary"
-                onClick={() => selectedFile === 'names' ? void saveNamesFile(serializedNamesDraft) : void saveDocument()}
-                disabled={selectedFile === 'about'}
+                onClick={() => {
+                  if (selectedFile === 'names') void saveNamesFile(serializedNamesDraft);
+                  else if (selectedFile === 'conditions') void saveConditionResourceFile();
+                  else void saveDocument();
+                }}
+                disabled={selectedFile === 'about' || (selectedFile === 'conditions' && (!selectedConditionResourceDirty || Boolean(conditionResourceJsonError)))}
               >
                 Save
               </Button></span>
+            </Tooltip>
+            <Tooltip title="Undo the last cat or clan attribute edit." arrow enterDelay={300}>
+              <span><IconButton aria-label="Undo" onClick={undo} disabled={!canUndo}><UndoIcon /></IconButton></span>
+            </Tooltip>
+            <Tooltip title="Redo the last undone cat or clan attribute edit." arrow enterDelay={300}>
+              <span><IconButton aria-label="Redo" onClick={redo} disabled={!canRedo}><RedoIcon /></IconButton></span>
             </Tooltip>
             <Tooltip title="Validate the current save data." arrow enterDelay={300}>
               <span><Button variant="outlined" onClick={() => validate()} disabled={selectedFile === 'about'}>Validate</Button></span>
@@ -2235,6 +2823,17 @@ export default function App() {
                   }}
                 >
                   <ListItemText primary="Names" secondary="dicts/names/names.json" />
+                </ListItemButton>
+              </ListItem>
+              <ListItem disablePadding>
+                <ListItemButton
+                  selected={selectedFile === 'conditions'}
+                  onClick={() => {
+                    setSelectedFile('conditions');
+                    setOpen(false);
+                  }}
+                >
+                  <ListItemText primary="Conditions" secondary="dicts/conditions/*.json" />
                 </ListItemButton>
               </ListItem>
               <ListItem disablePadding>

@@ -1,7 +1,7 @@
 import type { Cat } from './catDocument';
 import { afterlifeStateForCat, isDeadCat } from './afterlife';
 
-export type FamilyEdgeKind = 'parent' | 'adoptive' | 'mate';
+export type FamilyEdgeKind = 'parent' | 'adoptive' | 'mate' | 'formerMate';
 
 export interface FamilyGraphNode {
   id: string;
@@ -45,7 +45,7 @@ export function buildFamilyGraph(cats: Cat[], focusId?: string | null): FamilyGr
   const edgeKeys = new Set<string>();
   const addEdge = (source: string, target: string, kind: FamilyEdgeKind) => {
     if (!catsById.has(source) || !catsById.has(target) || source === target) return;
-    const key = kind === 'mate'
+    const key = kind === 'mate' || kind === 'formerMate'
       ? `${kind}:${[source, target].sort().join(':')}`
       : `${kind}:${source}:${target}`;
     if (edgeKeys.has(key)) return;
@@ -59,7 +59,7 @@ export function buildFamilyGraph(cats: Cat[], focusId?: string | null): FamilyGr
     for (const parentId of biologicalParents) addEdge(parentId, id, 'parent');
     for (const parentId of relationIds(cat.adoptive_parents)) addEdge(parentId, id, 'adoptive');
     for (const mateId of relationIds(cat.mate)) addEdge(id, mateId, 'mate');
-    for (const mateId of relationIds(cat.previous_mates)) addEdge(id, mateId, 'mate');
+    for (const mateId of relationIds(cat.previous_mates)) addEdge(id, mateId, 'formerMate');
   }
 
   const focusedIds = new Set<string>();

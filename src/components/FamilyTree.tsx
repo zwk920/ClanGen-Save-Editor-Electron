@@ -1,6 +1,7 @@
-import { Alert, Box, Button, Chip, Paper, Stack, Typography } from '@mui/material';
+import { Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle, Paper, Stack, ToggleButton, ToggleButtonGroup, Tooltip, Typography } from '@mui/material';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildFamilyGraph, type FamilyEdgeKind } from '../model/familyGraph';
+import { findRemovableFamilyRelationships, type BiologicalParentSlot, type EditableFamilyRelationship, type FamilyRelationshipOperation, type RemovableFamilyRelationship } from '../model/familyRelationshipMutation';
 import { afterlifeStateForCat, isDeadCat } from '../model/afterlife';
 import { CatPreview } from './CatPreview';
 
@@ -11,6 +12,7 @@ interface FamilyTreeProps {
   selectedCatId: string | null;
   focusSelectedCat?: boolean;
   focusCatId?: string | null;
+  autoScrollToFocus?: boolean;
   allowShowAll?: boolean;
   onDoubleClickCat?: (catId: string) => void;
   onSelectCat: (catId: string) => void;
@@ -19,6 +21,19 @@ interface FamilyTreeProps {
   specialConditionForCat: (cat: Cat) => string | null;
   poseForCat: (cat: Cat) => string | undefined;
   isDeadCat: (cat: Cat) => boolean;
+  onRelationshipCommand?: (command: {
+    operation: FamilyRelationshipOperation;
+    relationship: EditableFamilyRelationship;
+    sourceId: string;
+    targetId: string;
+    replaceParentSlot?: BiologicalParentSlot;
+  }) => { kind: 'success' | 'rejected'; message: string } | {
+    kind: 'parent-slot-required';
+    sourceId: string;
+    targetId: string;
+    parent1Id: string;
+    parent2Id: string;
+  };
 }
 
 const nodeWidth = 220;
@@ -40,11 +55,19 @@ const ageGroupForMoons = (moonsValue: unknown): string => {
 const edgeStyle: Record<FamilyEdgeKind, { stroke: string; dash?: string; label: string }> = {
   parent: { stroke: '#536dfe', label: 'Biological parent' },
   adoptive: { stroke: '#00897b', dash: '8 5', label: 'Adoptive parent' },
-  mate: { stroke: '#d84315', dash: '3 5', label: 'Mate' },
+  mate: { stroke: '#d84315', dash: '3 5', label: 'Current mate' },
+  formerMate: { stroke: '#795548', dash: '2 7', label: 'Former mate (view only)' },
 };
 
-export function FamilyTree({ cats, selectedCatId, focusSelectedCat = false, focusCatId = null, allowShowAll = true, onDoubleClickCat, onSelectCat, displayCatLabel, roleForCat, specialConditionForCat, poseForCat, isDeadCat }: FamilyTreeProps): JSX.Element {
+export function FamilyTree({ cats, selectedCatId, focusSelectedCat = false, focusCatId = null, autoScrollToFocus = true, allowShowAll = true, onDoubleClickCat, onSelectCat, displayCatLabel, roleForCat, specialConditionForCat, poseForCat, isDeadCat, onRelationshipCommand }: FamilyTreeProps): JSX.Element {
   const [focusedCatId, setFocusedCatId] = useState<string | null>(focusCatId ?? (focusSelectedCat ? selectedCatId : null));
+  const [treeMode, setTreeMode] = useState<'view' | 'edit'>('view');
+  const [operation, setOperation] = useState<FamilyRelationshipOperation>('add');
+  const [relationship, setRelationship] = useState<EditableFamilyRelationship>('parent');
+  const [sourceId, setSourceId] = useState<string | null>(null);
+  const [editMessage, setEditMessage] = useState<string | null>(null);
+  const [parentSlotRequest, setParentSlotRequest] = useState<Extract<ReturnType<NonNullable<FamilyTreeProps['onRelationshipCommand']>>, { kind: 'parent-slot-required' }> | null>(null);
+  const [removalChoices, setRemovalChoices] = useState<RemovableFamilyRelationship[] | null>(null);
   const graph = useMemo(() => buildFamilyGraph(cats, focusedCatId), [cats, focusedCatId]);
   const nodeRefs = useRef(new Map<string, HTMLButtonElement>());
   const layout = useMemo(() => {
@@ -146,9 +169,62 @@ export function FamilyTree({ cats, selectedCatId, focusSelectedCat = false, focu
   }, [focusCatId]);
 
   useEffect(() => {
-    if (!focusedCatId) return;
+    if (!autoScrollToFocus || !focusedCatId) return;
     nodeRefs.current.get(focusedCatId)?.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
-  }, [focusedCatId, graph.nodes]);
+  }, [autoScrollToFocus, focusedCatId, graph.nodes]);
+
+  const clearEdit = () => {
+    setSourceId(null);
+    setEditMessage(null);
+    setParentSlotRequest(null);
+    setRemovalChoices(null);
+  };
+
+  const runRelationshipCommand = (command: {
+    operation: FamilyRelationshipOperation;
+    relationship: EditableFamilyRelationship;
+    sourceId: string;
+    targetId: string;
+    replaceParentSlot?: BiologicalParentSlot;
+  }) => {
+    if (!onRelationshipCommand) return;
+    const result = onRelationshipCommand(command);
+    if (result.kind === 'parent-slot-required') {
+      setParentSlotRequest(result);
+      return;
+    }
+    setEditMessage(result.message);
+    if (result.kind === 'success') setSourceId(null);
+  };
+
+  const submitRelationshipCommand = (targetId: string, replaceParentSlot?: BiologicalParentSlot) => {
+    if (!sourceId || !onRelationshipCommand) return;
+    if (operation === 'remove') {
+      const matches = findRemovableFamilyRelationships(cats, sourceId, targetId);
+      if (matches.length === 0) {
+        setEditMessage('These cats have no editable relationship to remove.');
+        return;
+      }
+      if (matches.length > 1) {
+        setRemovalChoices(matches);
+        return;
+      }
+      runRelationshipCommand({ operation: 'remove', ...matches[0] });
+      return;
+    }
+    runRelationshipCommand({ operation, relationship, sourceId, targetId, replaceParentSlot });
+  };
+
+  const removalChoiceLabel = (choice: RemovableFamilyRelationship): string => {
+    if (choice.relationship === 'mate') return 'Current mates';
+    const parentLabel = displayCatLabel(choice.sourceId);
+    const childLabel = displayCatLabel(choice.targetId);
+    return choice.relationship === 'parent'
+      ? `Biological parent: ${parentLabel} and ${childLabel}`
+      : `Adoptive parent: ${parentLabel} and ${childLabel}`;
+  };
+
+  const editing = Boolean(onRelationshipCommand) && treeMode === 'edit';
 
   if (cats.length === 0) return <Alert severity="info">Load a clan save to view the family tree.</Alert>;
 
@@ -157,10 +233,14 @@ export function FamilyTree({ cats, selectedCatId, focusSelectedCat = false, focu
       <Paper sx={{ p: 2 }}>
         <Stack direction="row" spacing={2} alignItems="center" justifyContent="space-between" flexWrap="wrap" useFlexGap>
           <Typography variant="h5">Family tree</Typography>
-          {allowShowAll && focusedCatId && <Button size="small" variant="outlined" onClick={() => setFocusedCatId(null)}>Show all cats</Button>}
+          {allowShowAll && focusedCatId && (
+            <Tooltip title="Stop focusing on one cat's family and show every cat in the tree." arrow enterDelay={300}>
+              <span><Button size="small" variant="outlined" onClick={() => setFocusedCatId(null)}>Show all cats</Button></span>
+            </Tooltip>
+          )}
         </Stack>
         <Typography variant="body2" color="text.secondary">
-          Parents flow from left to right. Click a portrait to select it and focus its family.
+          Parents flow from left to right. {editing ? 'Choose two portraits to edit their relationship.' : 'Click a portrait to select it and focus its family.'}
           {focusedCatId && ` Showing the family connected to ${displayCatLabel(focusedCatId)}.`}
         </Typography>
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 1.5 }}>
@@ -168,6 +248,101 @@ export function FamilyTree({ cats, selectedCatId, focusSelectedCat = false, focu
             <Chip key={kind} size="small" variant="outlined" label={style.label} sx={{ borderColor: style.stroke, color: style.stroke }} />
           ))}
         </Stack>
+        {onRelationshipCommand && (
+          <Stack spacing={1.25} sx={{ mt: 2 }}>
+            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ md: 'center' }} useFlexGap>
+              <ToggleButtonGroup
+                exclusive
+                size="small"
+                value={treeMode}
+                onChange={(_event, value: 'view' | 'edit' | null) => {
+                  if (value) {
+                    setTreeMode(value);
+                    clearEdit();
+                  }
+                }}
+                aria-label="Family tree mode"
+              >
+                <ToggleButton value="view">
+                  <Tooltip title="Browse the tree read-only: click a cat to select and focus it." arrow enterDelay={300}>
+                    <span>View</span>
+                  </Tooltip>
+                </ToggleButton>
+                <ToggleButton value="edit">
+                  <Tooltip title="Switch to editing mode to add or remove family, adoptive, and mate links between cats." arrow enterDelay={300}>
+                    <span>Edit</span>
+                  </Tooltip>
+                </ToggleButton>
+              </ToggleButtonGroup>
+              {editing && <>
+              <ToggleButtonGroup
+                exclusive
+                size="small"
+                value={operation}
+                onChange={(_event, value: FamilyRelationshipOperation | null) => {
+                  if (value) {
+                    setOperation(value);
+                    clearEdit();
+                  }
+                }}
+                aria-label="Family relationship operation"
+              >
+                <ToggleButton value="add">
+                  <Tooltip title="Create a new relationship link between two selected cats." arrow enterDelay={300}>
+                    <span>Add link</span>
+                  </Tooltip>
+                </ToggleButton>
+                <ToggleButton value="remove">
+                  <Tooltip title="Delete an existing relationship link between two selected cats." arrow enterDelay={300}>
+                    <span>Remove link</span>
+                  </Tooltip>
+                </ToggleButton>
+              </ToggleButtonGroup>
+              <ToggleButtonGroup
+                exclusive
+                size="small"
+                value={relationship}
+                onChange={(_event, value: EditableFamilyRelationship | null) => {
+                  if (value) {
+                    setRelationship(value);
+                    clearEdit();
+                  }
+                }}
+                aria-label="Family relationship type"
+              >
+                <ToggleButton value="parent">
+                  <Tooltip title="Edit a biological parent/child link (sets parent1 or parent2)." arrow enterDelay={300}>
+                    <span>Biological parent</span>
+                  </Tooltip>
+                </ToggleButton>
+                <ToggleButton value="adoptive">
+                  <Tooltip title="Edit an adoptive parent link." arrow enterDelay={300}>
+                    <span>Adoptive parent</span>
+                  </Tooltip>
+                </ToggleButton>
+                <ToggleButton value="mate">
+                  <Tooltip title="Edit a current-mate link. Updates both cats' mate lists and relationship files together." arrow enterDelay={300}>
+                    <span>Current mates</span>
+                  </Tooltip>
+                </ToggleButton>
+              </ToggleButtonGroup>
+              <Tooltip title="Cancel the in-progress edit and clear any status message." arrow enterDelay={300}>
+                <span><Button size="small" variant="text" onClick={clearEdit} disabled={!sourceId && !editMessage}>Clear</Button></span>
+              </Tooltip>
+              </>}
+            </Stack>
+            {editing && <>
+              <Typography variant="body2" color="text.secondary">
+                {sourceId
+                  ? operation === 'remove'
+                    ? `Select the other cat. All editable links to ${displayCatLabel(sourceId)} will be checked.`
+                    : `Select the ${relationship === 'mate' ? 'other mate' : relationship === 'parent' ? 'child' : 'adopted child'} for ${displayCatLabel(sourceId)}.`
+                  : `Select the ${relationship === 'mate' ? 'first mate' : relationship === 'parent' ? 'parent' : 'adoptive parent'} to ${operation} a ${relationship === 'mate' ? 'current-mate' : relationship} link.`}
+              </Typography>
+              {editMessage && <Alert severity={editMessage.startsWith('Added') || editMessage.startsWith('Removed') || editMessage.startsWith('Set') ? 'success' : 'warning'} onClose={() => setEditMessage(null)}>{editMessage}</Alert>}
+            </>}
+          </Stack>
+        )}
       </Paper>
       <Box sx={{ minHeight: 0, overflow: 'auto', border: 1, borderColor: 'divider', borderRadius: 1, bgcolor: 'background.default' }}>
         <Box sx={{ position: 'relative', width: graph.width, height: layout.height }}>
@@ -177,7 +352,7 @@ export function FamilyTree({ cats, selectedCatId, focusSelectedCat = false, focu
               const target = nodePositions.get(edge.target);
               if (!source || !target) return null;
               const style = edgeStyle[edge.kind];
-              if (edge.kind === 'mate') {
+              if (edge.kind === 'mate' || edge.kind === 'formerMate') {
                 const sourceAboveTarget = source.y <= target.y;
                 const sourceX = source.x + nodeWidth / 2;
                 const targetX = target.x + nodeWidth / 2;
@@ -216,17 +391,24 @@ export function FamilyTree({ cats, selectedCatId, focusSelectedCat = false, focu
                   else nodeRefs.current.delete(node.id);
                 }}
                 onClick={() => {
-                  setFocusedCatId(node.id);
-                  onSelectCat(node.id);
+                  if (!editing) {
+                    setFocusedCatId(node.id);
+                    onSelectCat(node.id);
+                  } else if (!sourceId) {
+                    setSourceId(node.id);
+                    setEditMessage(null);
+                  } else {
+                    submitRelationshipCommand(node.id);
+                  }
                 }}
-                onDoubleClick={() => onDoubleClickCat?.(node.id)}
+                onDoubleClick={() => !editing && onDoubleClickCat?.(node.id)}
                 variant="outlined"
                 sx={{
                   position: 'absolute', left: position.x, top: position.y, width: nodeWidth, height: nodeHeight,
                   p: 1, textAlign: 'left', cursor: 'pointer', color: 'inherit',
-                  border: selectedCatId === node.id ? 2 : 1,
-                  borderColor: selectedCatId === node.id ? 'primary.main' : dead ? 'error.main' : 'divider',
-                  bgcolor: selectedCatId === node.id ? 'action.selected' : 'background.paper',
+                  border: selectedCatId === node.id || sourceId === node.id ? 2 : 1,
+                  borderColor: sourceId === node.id ? 'secondary.main' : selectedCatId === node.id ? 'primary.main' : dead ? 'error.main' : 'divider',
+                  bgcolor: sourceId === node.id ? 'secondary.light' : selectedCatId === node.id ? 'action.selected' : 'background.paper',
                   '&:hover': { borderColor: 'primary.main', bgcolor: 'action.hover' },
                 }}
               >
@@ -247,6 +429,60 @@ export function FamilyTree({ cats, selectedCatId, focusSelectedCat = false, focu
           })}
         </Box>
       </Box>
+      <Dialog open={Boolean(parentSlotRequest)} onClose={() => setParentSlotRequest(null)}>
+        <DialogTitle>Replace a biological parent?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            {parentSlotRequest && `${displayCatLabel(parentSlotRequest.targetId)} already has two biological parents. Choose which existing parent to replace with ${displayCatLabel(parentSlotRequest.sourceId)}.`}
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setParentSlotRequest(null)}>Cancel</Button>
+          <Button
+            onClick={() => {
+              if (!parentSlotRequest) return;
+              submitRelationshipCommand(parentSlotRequest.targetId, 'parent1');
+              setParentSlotRequest(null);
+            }}
+          >
+            Replace first parent
+          </Button>
+          <Button
+            onClick={() => {
+              if (!parentSlotRequest) return;
+              submitRelationshipCommand(parentSlotRequest.targetId, 'parent2');
+              setParentSlotRequest(null);
+            }}
+          >
+            Replace second parent
+          </Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog open={Boolean(removalChoices)} onClose={() => setRemovalChoices(null)}>
+        <DialogTitle>Choose a relationship to remove</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            These cats have multiple editable connections. Choose one relationship to remove.
+          </DialogContentText>
+          <Stack spacing={1} sx={{ mt: 2 }}>
+            {removalChoices?.map((choice) => (
+              <Button
+                key={`${choice.relationship}-${choice.sourceId}-${choice.targetId}`}
+                variant="outlined"
+                onClick={() => {
+                  runRelationshipCommand({ operation: 'remove', ...choice });
+                  setRemovalChoices(null);
+                }}
+              >
+                {removalChoiceLabel(choice)}
+              </Button>
+            ))}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRemovalChoices(null)}>Cancel</Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

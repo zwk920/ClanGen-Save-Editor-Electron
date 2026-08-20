@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain } from 'electron';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -90,22 +90,94 @@ function registerFileHandlers(): void {
     await fs.writeFile(filePath, contents, 'utf8');
   });
 
-  ipcMain.handle('clans:save', async (_event, clanCatsPath: string, cats: unknown, metadataContents?: string | null) => {
+  ipcMain.handle('clans:read-conditions', async (_event, clanCatsPath: string) => {
+    const clanFolderPath = path.dirname(resolveClanCatsPath(clanCatsPath));
+    const conditionDirectory = path.join(clanFolderPath, 'conditions');
+    const conditionFiles: Record<string, Record<string, unknown>> = {};
+    try {
+      const files = await fs.readdir(conditionDirectory);
+      await Promise.all(files.filter((fileName) => /^.+_conditions\.json$/u.test(fileName)).map(async (fileName) => {
+        try {
+          const contents = await fs.readFile(path.join(conditionDirectory, fileName), 'utf8');
+          const parsed = JSON.parse(contents) as unknown;
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            conditionFiles[fileName.replace(/_conditions\.json$/u, '')] = parsed as Record<string, unknown>;
+          }
+        } catch {
+          // Ignore malformed condition files so the clan can still be opened.
+        }
+      }));
+    } catch {
+      // A clan with no conditions directory is valid.
+    }
+    return conditionFiles;
+  });
+
+  ipcMain.handle('clans:read-relationships', async (_event, clanCatsPath: string) => {
+    const clanFolderPath = path.dirname(resolveClanCatsPath(clanCatsPath));
+    const relationshipDirectory = path.join(clanFolderPath, 'relationships');
+    const relationshipFiles: Record<string, Record<string, unknown>[]> = {};
+    try {
+      const files = await fs.readdir(relationshipDirectory);
+      await Promise.all(files.filter((fileName) => /^.+_relations\.json$/u.test(fileName)).map(async (fileName) => {
+        try {
+          const contents = await fs.readFile(path.join(relationshipDirectory, fileName), 'utf8');
+          const parsed = JSON.parse(contents) as unknown;
+          if (Array.isArray(parsed) && parsed.every((entry) => entry && typeof entry === 'object' && !Array.isArray(entry))) {
+            relationshipFiles[fileName.replace(/_relations\.json$/u, '')] = parsed as Record<string, unknown>[];
+          }
+        } catch {
+          // Ignore malformed relationship files so the clan can still be opened.
+        }
+      }));
+    } catch {
+      // A clan with no relationships directory is valid.
+    }
+    return relationshipFiles;
+  });
+
+  ipcMain.handle('clans:save', async (_event, clanCatsPath: string, cats: unknown, metadataContents?: string | null, conditionFiles: Record<string, Record<string, unknown>> = {}, relationshipFiles: Record<string, Record<string, unknown>[]> = {}) => {
     const savePath = resolveClanCatsPath(clanCatsPath);
     const catsContents = JSON.stringify(cats, null, 2) + '\n';
     const clanFolderPath = path.dirname(savePath);
     const metadataPath = await findClanMetadataPath(clanFolderPath);
     await fs.writeFile(savePath, catsContents, 'utf8');
+    const conditionDirectory = path.join(clanFolderPath, 'conditions');
+    await fs.mkdir(conditionDirectory, { recursive: true });
+    const existingConditionFiles = await fs.readdir(conditionDirectory);
+    const requestedConditionFiles = new Set(Object.keys(conditionFiles).map((catId) => `${catId}_conditions.json`));
+    await Promise.all(existingConditionFiles
+      .filter((fileName) => /^.+_conditions\.json$/u.test(fileName) && !requestedConditionFiles.has(fileName))
+      .map((fileName) => fs.unlink(path.join(conditionDirectory, fileName))));
+    await Promise.all(Object.entries(conditionFiles).map(([catId, conditions]) => fs.writeFile(
+      path.join(conditionDirectory, `${catId}_conditions.json`),
+      JSON.stringify(conditions, null, 2) + '\n',
+      'utf8',
+    )));
+    const relationshipDirectory = path.join(clanFolderPath, 'relationships');
+    await fs.mkdir(relationshipDirectory, { recursive: true });
+    const existingRelationshipFiles = await fs.readdir(relationshipDirectory);
+    const requestedRelationshipFiles = new Set(Object.keys(relationshipFiles).map((catId) => `${catId}_relations.json`));
+    await Promise.all(existingRelationshipFiles
+      .filter((fileName) => /^.+_relations\.json$/u.test(fileName) && !requestedRelationshipFiles.has(fileName))
+      .map((fileName) => fs.unlink(path.join(relationshipDirectory, fileName))));
+    await Promise.all(Object.entries(relationshipFiles).map(([catId, relations]) => fs.writeFile(
+      path.join(relationshipDirectory, `${catId}_relations.json`),
+      JSON.stringify(relations, null, 2) + '\n',
+      'utf8',
+    )));
     try {
-      if (!metadataPath) return { metadataFileName: null };
+      if (!metadataPath) {
+        return { metadataFileName: null, conditionFilesSaved: Object.keys(conditionFiles).length, relationshipFilesSaved: Object.keys(relationshipFiles).length };
+      }
       const metadata = metadataContents
         ? JSON.parse(metadataContents) as Record<string, unknown>
         : JSON.parse(await fs.readFile(metadataPath, 'utf8')) as Record<string, unknown>;
       metadata.clan_cats = Array.isArray(cats) ? cats.map((cat) => String((cat as Record<string, unknown>).ID)).join(',') : '';
       await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2) + '\n', 'utf8');
-      return { metadataFileName: path.basename(metadataPath) };
+      return { metadataFileName: path.basename(metadataPath), conditionFilesSaved: Object.keys(conditionFiles).length, relationshipFilesSaved: Object.keys(relationshipFiles).length };
     } catch {
-      return { metadataFileName: null };
+      return { metadataFileName: null, conditionFilesSaved: Object.keys(conditionFiles).length, relationshipFilesSaved: Object.keys(relationshipFiles).length };
     }
   });
 
@@ -158,6 +230,12 @@ function registerFileHandlers(): void {
       return null;
     }
   });
+
+  ipcMain.handle('clipboard:write-text', (_event, text: string) => {
+    clipboard.writeText(text);
+  });
+
+  ipcMain.handle('clipboard:read-text', () => clipboard.readText());
 }
 
 async function discoverClanFolders(rootPath?: string): Promise<Array<{ name: string; path: string; gameVersion: string }>> {

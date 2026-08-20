@@ -9,6 +9,7 @@
     "predev": "tsc -p tsconfig.electron.json",
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && cross-env ELECTRON_START_URL=http://127.0.0.1:5173 electron .\"",
     "build": "tsc -b && vite build && tsc -p tsconfig.electron.json",
+    "test": "vitest run",
     "package:portable": "npm run build && electron-builder --win portable",
     "preview": "vite preview"
   },
@@ -32,6 +33,7 @@
     "electron-builder": "^25.1.8",
     "typescript": "^5.6.3",
     "vite": "^5.4.11",
+    "vitest": "^4.1.11",
     "wait-on": "^8.0.1"
   },
   "build": {
@@ -46,7 +48,9 @@
       "output": "release"
     },
     "win": {
-      "target": ["portable"]
+      "target": [
+        "portable"
+      ]
     }
   }
 }

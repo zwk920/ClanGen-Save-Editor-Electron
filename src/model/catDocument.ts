@@ -13,6 +13,18 @@ export interface ValidationIssue {
 
 export type TraitRanges = Record<string, Record<FacetName, [number, number]>>;
 
+export const NULLABLE_CAT_REFERENCE_FIELDS = ['parent1', 'parent2', 'mentor', 'df_mentor'] as const;
+export const LIST_CAT_REFERENCE_FIELDS = [
+  'adoptive_parents',
+  'former_mentor',
+  'mate',
+  'previous_mates',
+  'current_apprentice',
+  'former_apprentices',
+  'faded_offspring',
+  'df_apprentices',
+] as const;
+
 export function loadTraitRanges(data: unknown): TraitRanges {
   if (!data || typeof data !== 'object') return {} as TraitRanges;
 
@@ -92,13 +104,13 @@ export class CatDocument {
     this.cats = this.cats.filter((cat) => String(cat?.ID ?? '') !== String(catId));
 
     for (const cat of this.cats) {
-      for (const key of ['parent1', 'parent2', 'mentor']) {
+      for (const key of NULLABLE_CAT_REFERENCE_FIELDS) {
         if (String(cat[key] ?? '') === String(catId)) {
           cat[key] = null;
         }
       }
 
-      for (const key of ['adoptive_parents', 'former_mentor', 'mate', 'previous_mates', 'current_apprentice', 'former_apprentices']) {
+      for (const key of LIST_CAT_REFERENCE_FIELDS) {
         const value = cat[key];
         if (Array.isArray(value)) {
           cat[key] = value.filter((entry) => String(entry) !== String(catId));
@@ -133,6 +145,14 @@ export class CatDocument {
   }
 }
 
+// Clears relationship references since they point at IDs from the source clan, not this one.
+export function sanitizeImportedCat(cat: Cat): Cat {
+  const sanitized = structuredClone(cat);
+  for (const field of NULLABLE_CAT_REFERENCE_FIELDS) sanitized[field] = null;
+  for (const field of LIST_CAT_REFERENCE_FIELDS) sanitized[field] = [];
+  return sanitized;
+}
+
 export function validateDocument(
   document: CatDocument,
   traitRanges: TraitRanges | null = null,
@@ -141,16 +161,6 @@ export function validateDocument(
   const ranges = traitRanges ?? {};
   const ids = new Set<string>();
   const knownIds = new Set(document.cats.map((cat) => String(cat?.ID ?? '')));
-  const relationshipKeys = ['parent1', 'parent2', 'mentor'];
-  const listRelationshipKeys = [
-    'adoptive_parents',
-    'former_mentor',
-    'mate',
-    'previous_mates',
-    'current_apprentice',
-    'former_apprentices',
-  ];
-
   for (const cat of document.cats) {
     const catId = String(cat?.ID ?? '');
 
@@ -190,7 +200,7 @@ export function validateDocument(
       issues.push({ severity: 'error', message: 'Experience must be an integer from 0 to 321.', cat_id: catId, field: 'experience' });
     }
 
-    for (const key of relationshipKeys) {
+    for (const key of NULLABLE_CAT_REFERENCE_FIELDS) {
       const value = cat?.[key];
       if (value !== null && value !== undefined && value !== '') {
         const id = String(value);
@@ -203,7 +213,7 @@ export function validateDocument(
       }
     }
 
-    for (const key of listRelationshipKeys) {
+    for (const key of LIST_CAT_REFERENCE_FIELDS) {
       const value = cat?.[key];
       if (value !== null && value !== undefined && !Array.isArray(value)) {
         issues.push({ severity: 'error', message: `${key} must be a list or null.`, cat_id: catId, field: key });

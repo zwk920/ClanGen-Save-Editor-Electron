@@ -34,3 +34,11 @@ export async function readJsonFile(fileReference: { contents: string }): Promise
 export async function writeJsonFile(fileReference: DesktopFileReference, value: unknown): Promise<void> {
   await window.electronFileSystem.writeFile(fileReference.filePath, JSON.stringify(value, null, 2) + '\n');
 }
+
+export async function copyTextToClipboard(text: string): Promise<void> {
+  await window.electronFileSystem.writeClipboardText(text);
+}
+
+export async function readTextFromClipboard(): Promise<string> {
+  return window.electronFileSystem.readClipboardText();
+}

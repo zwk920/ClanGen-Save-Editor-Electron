@@ -7,6 +7,7 @@ import spriteIndex from '../components/catRenderer/assets/spritesIndex.json';
 export type ResourceOptions = Record<string, string[]>;
 export type ResourceGroups = Record<string, Record<string, string[]>>;
 export type TraitRanges = Record<string, Record<string, [number, number]>>;
+export type ConditionDefinitions = Record<string, Record<string, Record<string, unknown>>>;
 
 const TORTIE_COAT_SPRITES = ['single', 'tabby', 'marbled', 'rosette', 'smoke', 'ticked', 'speckled', 'bengal', 'mackerel', 'classic', 'sokoke', 'agouti', 'singlestripe', 'masked'];
 const SPRITE_KEYS = Object.keys(spriteIndex);
@@ -18,6 +19,7 @@ export interface ResourceCatalog {
   options: ResourceOptions;
   groups: ResourceGroups;
   traitRanges: TraitRanges;
+  conditionDefinitions?: ConditionDefinitions;
   warnings: string[];
   loadedFiles: string[];
 }
@@ -39,6 +41,7 @@ export async function loadResourceCatalog(resourceDirPath: string): Promise<Reso
     },
     groups: {},
     traitRanges: {},
+    conditionDefinitions: {},
     warnings: [],
     loadedFiles: [],
   };
@@ -128,6 +131,16 @@ export async function loadResourceCatalog(resourceDirPath: string): Promise<Reso
   if (herbInfo && typeof herbInfo === 'object') {
     catalog.options.inventory = uniqueStrings(Object.keys(herbInfo as Record<string, unknown>));
   }
+
+  const illnesses = await getJsonFileFromDir(resourceDirPath, 'dicts/conditions/illnesses.json');
+  catalog.options.condition_illness = objectKeys(illnesses);
+  catalog.conditionDefinitions!.illness = objectDefinitions(illnesses);
+  const injuries = await getJsonFileFromDir(resourceDirPath, 'dicts/conditions/injuries.json');
+  catalog.options.condition_injury = objectKeys(injuries);
+  catalog.conditionDefinitions!.injury = objectDefinitions(injuries);
+  const permanentConditions = await getJsonFileFromDir(resourceDirPath, 'dicts/conditions/permanent_conditions.json');
+  catalog.options.condition_permanent = objectKeys(permanentConditions);
+  catalog.conditionDefinitions!.permanent = objectDefinitions(permanentConditions);
 
   catalog.options.scars = await collectResourceArrayValues(resourceDirPath, ['dicts/events', 'lang/en/events', 'lang/en/patrols'], 'scars');
 
@@ -243,6 +256,18 @@ function uniqueStrings(values: unknown): string[] {
     if (typeof value === 'string' && !result.includes(value)) result.push(value);
   }
   return result;
+}
+
+function objectKeys(value: unknown): string[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  return Object.keys(value as Record<string, unknown>).filter((key) => !key.startsWith('_') && key !== 'comment').sort();
+}
+
+function objectDefinitions(value: unknown): Record<string, Record<string, unknown>> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([key, definition]) => !key.startsWith('_') && key !== 'comment' && definition && typeof definition === 'object' && !Array.isArray(definition))
+    .map(([key, definition]) => [key, structuredClone(definition) as Record<string, unknown>]));
 }
 
 function loadTraitRangesFromJson(data: unknown): TraitRanges {
