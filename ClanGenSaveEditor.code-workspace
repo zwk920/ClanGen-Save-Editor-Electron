@@ -1,0 +1,31 @@
+{
+	"folders": [
+		{
+			"name": "saves",
+			"path": "C:/Users/zwk92/AppData/Local/ClanGen/ClanGen/saves"
+		},
+		{
+			"name": "saves",
+			"path": "C:/Users/zwk92/AppData/Local/LifeGen/LifeGen/saves"
+		},
+		{
+			"name": "clangen-save-editor-electron",
+			"path": "."
+		},
+		{
+			"name": "Lifegen",
+			"path": "../../../Programs/Lifegen"
+		},
+		{
+			"name": "Clangen",
+			"path": "../../../Programs/Clangen"
+		},
+		{
+			"path": "../clangen-source"
+		},
+		{
+			"path": "../lifegen-source"
+		}
+	],
+	"settings": {}
+}

@@ -2141,8 +2141,11 @@ export default function App() {
         <Box sx={{ display: 'grid', placeItems: 'start', alignContent: 'start', minHeight: 0 }}>
           <Paper sx={{ p: 3, width: 'min(100%, 560px)' }}>
             <Typography variant="h4" gutterBottom>ClanGen Save Editor</Typography>
-            <Typography color="text.secondary">Version 0.1.0</Typography>
+            <Typography color="text.secondary">Version 1.1.1</Typography>
             <Typography sx={{ mt: 2 }}>A local desktop editor for ClanGen and LifeGen clan save files.</Typography>
+            <Typography sx={{ mt: 2 }}>
+              This editor was programmed with AI assistance, but no AI-generated art or story writing is present. The editor itself is made with AI; the game content and creative assets are not.
+            </Typography>
             <Typography sx={{ mt: 2 }}>
               Sprite Preview Generator built from cgen-tools Pixel Cat Maker:{' '}
               <Box component="a" href="https://cgen-tools.github.io/pixel-cat-maker/" target="_blank" rel="noreferrer" sx={{ color: 'primary.main' }}>
