@@ -31,6 +31,12 @@ import {
   Select,
   Stack,
   Tab,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   Tabs,
   TextField,
   Tooltip,
@@ -122,6 +128,29 @@ const lifeStageSprites = [
   ['Senior', 'sprite_senior'],
   ['Paralyzed adult', 'sprite_para_adult'],
 ] as const;
+const EVENT_INJURIES_DISTRIBUTION_FILE = 'dicts/conditions/event_injuries_distribution.json';
+
+type EventInjuriesDistribution = Record<string, Record<string, number>>;
+
+function parseEventInjuriesDistribution(contents: string): EventInjuriesDistribution | null {
+  try {
+    const parsed: unknown = JSON.parse(contents);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const distribution: EventInjuriesDistribution = {};
+    for (const [rank, severities] of Object.entries(parsed)) {
+      if (!severities || typeof severities !== 'object' || Array.isArray(severities)) return null;
+      const parsedSeverities: Record<string, number> = {};
+      for (const [severity, value] of Object.entries(severities)) {
+        if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+        parsedSeverities[severity] = value;
+      }
+      distribution[rank] = parsedSeverities;
+    }
+    return distribution;
+  } catch {
+    return null;
+  }
+}
 function lifeStageForMoons(moonsValue: unknown): [string, string] {
   const moons = Number(moonsValue);
   if (!Number.isFinite(moons) || moons <= 0) return lifeStageSprites[0] as [string, string];
@@ -2480,6 +2509,24 @@ export default function App() {
       );
     }
     if (selectedFile === 'conditions') {
+      const isEventInjuriesDistribution = selectedConditionResourceFile === EVENT_INJURIES_DISTRIBUTION_FILE;
+      const eventInjuriesDistribution = isEventInjuriesDistribution
+        ? parseEventInjuriesDistribution(selectedConditionResourceDraft)
+        : null;
+      const updateEventInjuriesDistribution = (rank: string, severity: string, value: string) => {
+        if (!eventInjuriesDistribution || !selectedConditionResourceFile) return;
+        const nextDistribution = Object.fromEntries(
+          Object.entries(eventInjuriesDistribution).map(([currentRank, severities]) => [
+            currentRank,
+            { ...severities },
+          ]),
+        ) as EventInjuriesDistribution;
+        nextDistribution[rank][severity] = value === '' ? 0 : Number(value);
+        setConditionResourceDraft(selectedConditionResourceFile, JSON.stringify(nextDistribution, null, 2) + '\n');
+      };
+      const distributionSeverities = eventInjuriesDistribution
+        ? Array.from(new Set(Object.values(eventInjuriesDistribution).flatMap((severities) => Object.keys(severities))))
+        : [];
       return (
         <Box sx={{ display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr)', gap: 2, alignContent: 'start', minWidth: 0, minHeight: 0, height: '100%', overflow: 'hidden' }}>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }}>
@@ -2502,33 +2549,71 @@ export default function App() {
             <Alert severity="info">Select a ClanGen or LifeGen data folder to edit condition resources.</Alert>
           ) : (
             <Box sx={{ display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr)', gap: 2, minHeight: 0 }}>
-              <FormControl fullWidth size="small" disabled={conditionResourceFiles.length === 0}>
-                <InputLabel id="condition-resource-file-label">Condition resource</InputLabel>
-                <Select
-                  labelId="condition-resource-file-label"
-                  value={selectedConditionResourceFile}
-                  label="Condition resource"
-                  onChange={(event) => { void selectConditionResourceFile(String(event.target.value)); }}
+              {conditionResourceFiles.length === 0 ? (
+                <Alert severity="info">No condition JSON files found.</Alert>
+              ) : (
+                <Tabs
+                  value={selectedConditionResourceFile || false}
+                  onChange={(_event, value: string) => { void selectConditionResourceFile(value); }}
+                  variant="scrollable"
+                  scrollButtons="auto"
+                  aria-label="Condition resources"
                 >
-                  {conditionResourceFiles.length === 0 ? (
-                    <MenuItem value="" disabled>No condition JSON files found</MenuItem>
-                  ) : conditionResourceFiles.map((file) => (
-                    <MenuItem key={file} value={file}>{file.replace('dicts/conditions/', '')}</MenuItem>
+                  {conditionResourceFiles.map((file) => (
+                    <Tab
+                      key={file}
+                      value={file}
+                      label={file.replace('dicts/conditions/', '').replace('.json', '')}
+                      id={`condition-resource-tab-${file}`}
+                      aria-controls="condition-resource-editor"
+                    />
                   ))}
-                </Select>
-              </FormControl>
-              <Box sx={{ minHeight: 0, overflow: 'auto', display: 'grid', gap: 1, alignContent: 'start' }}>
+                </Tabs>
+              )}
+              <Box id="condition-resource-editor" role="tabpanel" sx={{ minHeight: 0, overflow: 'auto', display: 'grid', gap: 1, alignContent: 'start' }}>
                 {conditionResourceJsonError && <Alert severity="error">{conditionResourceJsonError}</Alert>}
-                <TextField
-                  fullWidth
-                  multiline
-                  minRows={24}
-                  disabled={!selectedConditionResourceFile}
-                  placeholder="Choose a condition resource file."
-                  value={selectedConditionResourceDraft}
-                  onChange={(event) => setConditionResourceDraft(selectedConditionResourceFile, event.target.value)}
-                  sx={{ '& textarea': { fontFamily: 'monospace', fontSize: '0.85rem' } }}
-                />
+                {isEventInjuriesDistribution && eventInjuriesDistribution ? (
+                  <TableContainer component={Paper} variant="outlined">
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Rank</TableCell>
+                          {distributionSeverities.map((severity) => <TableCell key={severity} align="right">{severity}</TableCell>)}
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {Object.entries(eventInjuriesDistribution).map(([rank, severities]) => (
+                          <TableRow key={rank}>
+                            <TableCell component="th" scope="row">{rank}</TableCell>
+                            {distributionSeverities.map((severity) => (
+                              <TableCell key={severity} align="right">
+                                <TextField
+                                  size="small"
+                                  type="number"
+                                  value={severities[severity] ?? 0}
+                                  inputProps={{ min: 0, step: 1, 'aria-label': `${rank} ${severity} injury count` }}
+                                  onChange={(event) => updateEventInjuriesDistribution(rank, severity, event.target.value)}
+                                  sx={{ width: 100 }}
+                                />
+                              </TableCell>
+                            ))}
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                ) : (
+                  <TextField
+                    fullWidth
+                    multiline
+                    minRows={24}
+                    disabled={!selectedConditionResourceFile}
+                    placeholder="Choose a condition resource file."
+                    value={selectedConditionResourceDraft}
+                    onChange={(event) => setConditionResourceDraft(selectedConditionResourceFile, event.target.value)}
+                    sx={{ '& textarea': { fontFamily: 'monospace', fontSize: '0.85rem' } }}
+                  />
+                )}
               </Box>
             </Box>
           )}
