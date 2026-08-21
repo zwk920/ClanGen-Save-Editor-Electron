@@ -2250,7 +2250,7 @@ export default function App({ webModeOverride }: AppProps = {}) {
         <Box sx={{ display: 'grid', placeItems: 'start', alignContent: 'start', minHeight: 0 }}>
           <Paper sx={{ p: 3, width: 'min(100%, 560px)' }}>
             <Typography variant="h4" gutterBottom>ClanGen Save Editor</Typography>
-            <Typography color="text.secondary">Version 1.1.1</Typography>
+            <Typography color="text.secondary">Version 1.2.0</Typography>
             <Typography sx={{ mt: 2 }}>A local desktop editor for ClanGen and LifeGen clan save files.</Typography>
             <Typography sx={{ mt: 2 }}>
               This editor was programmed with AI assistance, but no AI-generated art or story writing is present. The editor itself is made with AI; the game content and creative assets are not.
