@@ -17,6 +17,12 @@ type SpriteInfo = { spritesheet: string; xOffset: number; yOffset: number };
 type CanvasContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
 const spriteCache = new Map<string, Promise<HTMLImageElement>>();
+const webSpriteUrls = import.meta.glob('./catRenderer/assets/sprites/*.png', {
+  eager: true,
+  import: 'default',
+  query: '?url',
+}) as Record<string, string>;
+const webMode = import.meta.env.VITE_WEB_MODE === 'true';
 const spriteNames: Record<string, string> = {
   SingleColour: 'single',
   TwoColour: 'single',
@@ -40,14 +46,30 @@ function loadSpriteSheet(resourceDirPath: string | null, name: string): Promise<
   const cached = spriteCache.get(cacheKey);
   if (cached) return cached;
   const promise = (async () => {
-    if (!resourceDirPath) throw new Error('Select the ClanGen data folder to preview cat sprites.');
-    const base64 = await window.electronFileSystem.readSpriteFile(resourceDirPath, `${name}.png`);
-    if (!base64) throw new Error(`Missing sprite sheet: ${name}`);
     const image = new Image();
     await new Promise<void>((resolve, reject) => {
       image.addEventListener('load', () => resolve(), { once: true });
       image.addEventListener('error', () => reject(new Error(`Missing sprite sheet: ${name}`)), { once: true });
-      image.src = `data:image/png;base64,${base64}`;
+      if (webMode) {
+        const spriteUrl = webSpriteUrls[`./catRenderer/assets/sprites/${name}.png`];
+        if (!spriteUrl) {
+          reject(new Error(`Missing bundled sprite sheet: ${name}`));
+          return;
+        }
+        image.src = spriteUrl;
+        return;
+      }
+      if (!resourceDirPath) {
+        reject(new Error('Select the ClanGen data folder to preview cat sprites.'));
+        return;
+      }
+      void window.electronFileSystem.readSpriteFile(resourceDirPath, `${name}.png`).then((base64) => {
+        if (!base64) {
+          reject(new Error(`Missing sprite sheet: ${name}`));
+          return;
+        }
+        image.src = `data:image/png;base64,${base64}`;
+      }).catch(reject);
     });
     return image;
   })();
@@ -239,7 +261,7 @@ export function CatPreview({ cat, poseName, label, size = 128 }: CatPreviewProps
       if (!cancelled) setError(reason instanceof Error ? reason.message : 'Unable to render this cat.');
     });
     return () => { cancelled = true; };
-  }, [cat, poseName, resourceDirPath]);
+  }, [cat, poseName, resourceDirPath, webMode]);
 
   return (
     <Box sx={{ display: 'grid', placeItems: 'center', gap: 0, minWidth: size }}>

@@ -20,7 +20,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <App webModeOverride={false} />
+      <App webModeOverride={true} />
     </ThemeProvider>
   </React.StrictMode>,
 );

@@ -3,6 +3,12 @@ import whitePatchesMidData from '../components/catRenderer/assets/data/white_pat
 import whitePatchesMostlyData from '../components/catRenderer/assets/data/white_patches_mostly_sprite_data.json';
 import whitePatchesHighData from '../components/catRenderer/assets/data/white_patches_high_sprite_data.json';
 import spriteIndex from '../components/catRenderer/assets/spritesIndex.json';
+import bundledNames from '../components/catRenderer/assets/resources/names.json';
+import poseSpriteData from '../components/catRenderer/assets/pose_sprite_data.json';
+import bundledPelts from '../components/catRenderer/assets/resources/pelts.en.json';
+import bundledEyes from '../components/catRenderer/assets/resources/eyes.en.json';
+import bundledAccessories from '../components/catRenderer/assets/resources/accessories.en.json';
+import peltInfo from '../components/catRenderer/assets/peltInfo.json';
 
 export type ResourceOptions = Record<string, string[]>;
 export type ResourceGroups = Record<string, Record<string, string[]>>;
@@ -22,6 +28,81 @@ export interface ResourceCatalog {
   conditionDefinitions?: ConditionDefinitions;
   warnings: string[];
   loadedFiles: string[];
+}
+
+export function createWebResourceCatalog(): ResourceCatalog {
+  const data = bundledNames as Record<string, any>;
+  const normalPrefixes = uniqueStrings(data.normal_prefixes ?? []);
+  const normalSuffixes = uniqueStrings(data.normal_suffixes ?? []);
+  const poses = poseSpriteData.poses as string[];
+  const posesFor = (prefix: string) => poses.filter((pose) => pose.startsWith(prefix));
+  const peltEntries = (bundledPelts as Record<string, any>).en as Record<string, any>;
+  const peltKeys = Object.keys(peltEntries);
+  const peltNames = peltKeys
+    .filter((key) => key !== 'vitiligo' && !key.endsWith('_long') && peltKeys.includes(`${key}_long`))
+    .filter((name) => !['Tortie_tabby', 'Calico_tabby'].includes(name) && name.toLowerCase() !== 'mottled');
+  const peltColors = peltKeys.filter((key) => {
+    const value = peltEntries[key];
+    return value && typeof value === 'object' && 'one' in value && 'many' in value && !peltKeys.includes(`${key}_long`);
+  });
+  const eyeColors = Object.keys((bundledEyes as Record<string, any>).en ?? {});
+  const accessoryNames = Object.keys((bundledAccessories as Record<string, any>).en ?? {}).filter((key) => key !== 'INFO');
+  const scars = uniqueStrings([
+    ...peltInfo.scars1,
+    ...peltInfo.scars2,
+    ...peltInfo.scars3,
+  ]);
+  return {
+    options: {
+      gender: ['female', 'male'],
+      gender_align: ['female', 'male', 'nonbinary', 'trans female', 'trans male'],
+      name_prefix: normalPrefixes,
+      name_suffix: normalSuffixes,
+      sprite_newborn: posesFor('newborn'),
+      sprite_kitten: posesFor('kitten'),
+      sprite_adolescent: posesFor('adolescent_'),
+      sprite_adult: posesFor('adult_'),
+      sprite_senior: posesFor('senior'),
+      sprite_para_adult: posesFor('para_adult_'),
+      pelt_name: peltNames,
+      pelt_color: peltColors,
+      pelt_length: peltKeys.filter((key) => key.startsWith('fur_')).map((key) => key.replace('fur_', '')),
+      eye_colour: eyeColors,
+      eye_colour2: [...eyeColors],
+      accessory: accessoryNames,
+      scars,
+      white_patches_tint: ['darkcream', 'cream', 'offwhite', 'gray', 'pink'],
+      white_patches: uniqueStrings([
+        ...whitePatchesLittleData.sprite_list.flat(),
+        ...whitePatchesMidData.sprite_list.flat(),
+        ...whitePatchesMostlyData.sprite_list.flat(),
+        ...whitePatchesHighData.sprite_list.flat(),
+      ]).sort(),
+      points: ['COLOURPOINT', 'MINKPOINT', 'SEPIAPOINT'],
+      vitiligo: ['MOON', 'PHANTOM', 'POWDER', 'BLEACHED', 'VITILIGO', 'VITILIGOTWO', 'KARPATI', 'SMOKEY'],
+      tortie_marking: TORTIE_MARKINGS,
+      tortie_base: TORTIE_COAT_SPRITES,
+      tortie_color: uniqueStrings(TORTIE_COLOURS.map((colour) => colour.replace(/^stripe/, ''))),
+      tortie_pattern: TORTIE_COAT_SPRITES,
+      tint: ['none', 'pink', 'gray', 'red', 'black', 'orange', 'yellow', 'purple', 'blue', 'dilute', 'warmdilute', 'cooldilute'],
+      skin: SKIN_COLOURS,
+    },
+    groups: {
+      name_prefix: {
+        Normal: normalPrefixes,
+        ...Object.fromEntries(Object.entries(data.colour_prefixes ?? {}).map(([name, values]) => [`Color: ${name}`, uniqueStrings(values as any)])),
+        ...Object.fromEntries(Object.entries(data.biome_prefixes ?? {}).map(([name, values]) => [`Biome: ${name}`, uniqueStrings(values as any)])),
+      },
+      name_suffix: {
+        Normal: normalSuffixes,
+        ...Object.fromEntries(Object.entries(data.pelt_suffixes ?? {}).map(([name, values]) => [`Pelt: ${name}`, uniqueStrings(values as any)])),
+        ...Object.fromEntries(Object.entries(data.tortie_pelt_suffixes ?? {}).map(([name, values]) => [`Tortie pelt: ${name}`, uniqueStrings(values as any)])),
+      },
+    },
+    traitRanges: {},
+    warnings: [],
+    loadedFiles: ['dicts/names/names.json'],
+  };
 }
 
 const SPRITE_FIELDS = [

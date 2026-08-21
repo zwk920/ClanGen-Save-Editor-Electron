@@ -47,7 +47,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import MenuIcon from '@mui/icons-material/Menu';
 import RedoIcon from '@mui/icons-material/Redo';
 import UndoIcon from '@mui/icons-material/Undo';
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { useEditorStore } from './store/editorStore';
 import {
   BOOL_FIELDS,
@@ -62,13 +62,14 @@ import {
 import { optionsForField } from './services/resourceCatalog';
 import { FACET_NAMES, sanitizeImportedCat } from './model/catDocument';
 import { copyTextToClipboard, readTextFromClipboard } from './services/fileSystemAccess';
+import { copyWebCatDocument, createRandomWebCat, mergeWebImportedCats, parseWebCatDocument } from './services/webFileAccess';
 import { CatPreview } from './components/CatPreview';
 import { FamilyTree } from './components/FamilyTree';
 import { afterlifeStateForCat, isDeadCat as isDeadCatByBackstory } from './model/afterlife';
 import { createDefaultRelationshipEntry } from './model/relationships';
 import type { FamilyRelationshipCommand, FamilyRelationshipMutationResult } from './model/familyRelationshipMutation';
 
-const tabLabels = ['Overview', 'Identity', 'Appearance', 'Relationships', 'Skills', 'Faith', 'Conditions', 'JSON', 'Validation'];
+const desktopTabLabels = ['Overview', 'Identity', 'Appearance', 'Relationships', 'Skills', 'Faith', 'Conditions', 'JSON', 'Validation'];
 const TAB_TOOLTIPS: Record<string, string> = {
   Overview: 'Quick summary of the selected cat, including core status details.',
   Identity: 'Name, age, gender, rank, and core identity fields.',
@@ -327,7 +328,13 @@ function NameCollectionEditor({ title, options, selectedId, entries, disabled, o
   );
 }
 
-export default function App() {
+interface AppProps {
+  webModeOverride?: boolean;
+}
+
+export default function App({ webModeOverride }: AppProps = {}) {
+  const webMode = webModeOverride ?? (import.meta.env.VITE_WEB_MODE === 'true');
+  const tabLabels = webMode ? desktopTabLabels.slice(0, 3) : desktopTabLabels;
   const [open, setOpen] = useState(false);
   const [tabIndex, setTabIndex] = useState(0);
   const [selectedFile, setSelectedFile] = useState('clan_cats');
@@ -351,6 +358,15 @@ export default function App() {
   const [importDraftText, setImportDraftText] = useState('');
   const [importMode, setImportMode] = useState<'new' | 'overwrite'>('new');
   const [importError, setImportError] = useState<string | null>(null);
+  const [webImportDialogOpen, setWebImportDialogOpen] = useState(false);
+  const [webImportDraft, setWebImportDraft] = useState('');
+  const [webImportError, setWebImportError] = useState<string | null>(null);
+  const [desktopWebImportDialogOpen, setDesktopWebImportDialogOpen] = useState(false);
+  const [desktopWebImportDraft, setDesktopWebImportDraft] = useState('');
+  const [desktopWebImportError, setDesktopWebImportError] = useState<string | null>(null);
+  const [webExportStatus, setWebExportStatus] = useState<string | null>(null);
+  const randomizedWebDocument = useRef<object | null>(null);
+  const webDocumentInitialized = useRef(false);
   const [previousPeltNames, setPreviousPeltNames] = useState<Record<string, string>>({});
   const [familyTreeFocusCatId, setFamilyTreeFocusCatId] = useState<string | null>(null);
 
@@ -381,7 +397,9 @@ export default function App() {
   const selectClan = useEditorStore((state) => state.selectClan);
   const openSaveFile = useEditorStore((state) => state.openSaveFile);
   const openResourceDir = useEditorStore((state) => state.openResourceDir);
+  const loadWebResources = useEditorStore((state) => state.loadWebResources);
   const saveDocument = useEditorStore((state) => state.saveDocument);
+  const loadDocument = useEditorStore((state) => state.loadDocument);
   const updateConditionFile = useEditorStore((state) => state.updateConditionFile);
   const updateClanMetadata = useEditorStore((state) => state.updateClanMetadata);
   const saveNamesFile = useEditorStore((state) => state.saveNamesFile);
@@ -404,6 +422,7 @@ export default function App() {
   const canUndo = useEditorStore((state) => state.undoHistory.length > 0);
   const canRedo = useEditorStore((state) => state.redoHistory.length > 0);
   const replaceCat = useEditorStore((state) => state.replaceCat);
+  const replaceDocumentCats = useEditorStore((state) => state.replaceDocumentCats);
 
   const selectedConditions = useMemo<Record<string, unknown>>(
     () => selectedCatId ? conditionFiles[selectedCatId] ?? {} : {},
@@ -445,6 +464,24 @@ export default function App() {
   useEffect(() => {
     setSelectedRelationshipTargetId(null);
   }, [selectedCatId]);
+
+  useEffect(() => {
+    if (!webMode || !document || document.cats.length === 0 || randomizedWebDocument.current === document) return;
+    randomizedWebDocument.current = document;
+    const randomCat = document.cats[Math.floor(Math.random() * document.cats.length)];
+    if (randomCat?.ID !== undefined) setSelectedCatId(String(randomCat.ID));
+  }, [document, setSelectedCatId, webMode]);
+
+  useEffect(() => {
+    if (!webMode || document || webDocumentInitialized.current) return;
+    webDocumentInitialized.current = true;
+    const generatedCat = createRandomWebCat();
+    void loadDocument({
+      filePath: 'web:generated-cat',
+      fileName: 'generated-clan_cats.json',
+      contents: JSON.stringify([generatedCat]),
+    });
+  }, [document, loadDocument, webMode]);
 
   useEffect(() => {
     if (tabIndex === 6) {
@@ -603,8 +640,44 @@ export default function App() {
   };
 
   useEffect(() => {
-    void discoverClans();
-  }, [discoverClans]);
+    if (!webMode) void discoverClans();
+  }, [discoverClans, webMode]);
+
+  useEffect(() => {
+    if (webMode) loadWebResources();
+  }, [loadWebResources, webMode]);
+
+  const importWebDocument = () => {
+    try {
+      const file = parseWebCatDocument(webImportDraft.trim());
+      const importedCats = JSON.parse(file.contents) as Record<string, any>[];
+      if (document) replaceDocumentCats(mergeWebImportedCats(document.cats, importedCats));
+      else void loadDocument({ filePath: 'web:clan_cats.json', fileName: file.fileName, contents: JSON.stringify(importedCats) });
+      setWebImportError(null);
+      setWebImportDialogOpen(false);
+    } catch (error) {
+      setWebImportError(error instanceof SyntaxError ? 'The pasted text is not valid JSON.' : error instanceof Error ? error.message : 'The cat data could not be loaded.');
+    }
+  };
+
+  const importFromWebText = () => {
+    try {
+      const parsed: unknown = JSON.parse(desktopWebImportDraft.trim());
+      if (!Array.isArray(parsed)) throw new Error('The pasted text must contain a Clan Cats JSON array.');
+      if (!document) throw new Error('No save file is loaded.');
+      replaceDocumentCats(mergeWebImportedCats(document.cats, parsed));
+      setDesktopWebImportDialogOpen(false);
+      setDesktopWebImportDraft('');
+      setDesktopWebImportError(null);
+    } catch (error) {
+      const message = error instanceof SyntaxError
+        ? 'The pasted text does not contain valid JSON.'
+        : error instanceof Error
+          ? error.message
+          : 'The web cat data could not be imported.';
+      setDesktopWebImportError(message);
+    }
+  };
 
   const handleFieldChange = (field: string, value: any) => {
     if (!selectedCatId) return;
@@ -797,6 +870,10 @@ export default function App() {
     const nextPeltName = shouldUseTortie ? 'Tortie' : pick('pelt_name') ?? selectedCat.pelt_name ?? 'SingleColour';
     const isTortiePelt = nextPeltName === 'Tortie' || nextPeltName === 'Calico';
     const nextPatch: Record<string, any> = {
+      ...(webMode ? {
+        name_prefix: pick('name_prefix') ?? selectedCat.name_prefix ?? 'Unnamed',
+        name_suffix: pick('name_suffix') ?? selectedCat.name_suffix ?? '',
+      } : {}),
       pelt_name: nextPeltName,
       pelt_color: pick('pelt_color') ?? selectedCat.pelt_color ?? null,
       pelt_length: pick('pelt_length') ?? selectedCat.pelt_length ?? null,
@@ -1167,9 +1244,9 @@ export default function App() {
               <Typography variant="h6">Sprites</Typography>
               <Stack direction="row" spacing={1} alignItems="center">
                 {spriteFields.includes('reverse') && renderFieldEditor('reverse')}
-                <Button variant="outlined" size="small" disabled={!selectedCatId} onClick={handleRandomizeAppearance}>
+                {!webMode && <Button variant="outlined" size="small" disabled={!selectedCatId} onClick={handleRandomizeAppearance}>
                   Randomize
-                </Button>
+                </Button>}
               </Stack>
             </Stack>
             <Grid container spacing={2} sx={{ width: '100%', minWidth: 0 }}>
@@ -1463,6 +1540,7 @@ export default function App() {
 
   const renderIdentity = () => (
     <Grid container spacing={2}>
+      {!webMode && <>
       <Grid item xs={12} md={6}>
         <Autocomplete
           freeSolo
@@ -1497,6 +1575,7 @@ export default function App() {
           )}
         />
       </Grid>
+      </>}
       <Grid item xs={12} md={3}>
         <FieldTooltip field="ID" label="ID">
           <TextField
@@ -1508,7 +1587,7 @@ export default function App() {
           />
         </FieldTooltip>
       </Grid>
-      <Grid item xs={12} md={3}>
+      {!webMode && <Grid item xs={12} md={3}>
         <FieldTooltip field="gender" label="Gender">
           <FormControl fullWidth>
             <InputLabel>Gender</InputLabel>
@@ -1523,8 +1602,8 @@ export default function App() {
             </Select>
           </FormControl>
         </FieldTooltip>
-      </Grid>
-      <Grid item xs={12} md={3}>
+      </Grid>}
+      {!webMode && <Grid item xs={12} md={3}>
         <FieldTooltip field="gender_align" label="Gender alignment">
           <FormControl fullWidth>
             <InputLabel>Gender alignment</InputLabel>
@@ -1543,7 +1622,7 @@ export default function App() {
             </Select>
           </FormControl>
         </FieldTooltip>
-      </Grid>
+      </Grid>}
       <Grid item xs={12} md={3}>
         <FieldTooltip field="moons" label="Moons">
           <TextField
@@ -1658,8 +1737,38 @@ export default function App() {
     </Paper>
   );
 
+  const renderWebAppearanceIdentityFields = () => {
+    if (!webMode) return null;
+    return (
+      <Box>
+        <Typography variant="h6" sx={{ mb: 2 }}>Name</Typography>
+        <Grid container spacing={2}>
+          <Grid item xs={12} md={6}>
+            <Autocomplete
+              freeSolo
+              options={optionsForField(resourceCatalog ?? { options: {}, groups: {}, traitRanges: {}, warnings: [], loadedFiles: [] }, 'name_prefix', typeof selectedCat?.name_prefix === 'string' ? selectedCat.name_prefix : undefined)}
+              value={selectedCat?.name_prefix ?? ''}
+              onInputChange={(_, value) => handleFieldChange('name_prefix', value)}
+              renderInput={(params) => <FieldTooltip field="name_prefix" label="Name prefix"><TextField {...params} fullWidth label="Name prefix" /></FieldTooltip>}
+            />
+          </Grid>
+          <Grid item xs={12} md={6}>
+            <Autocomplete
+              freeSolo
+              options={optionsForField(resourceCatalog ?? { options: {}, groups: {}, traitRanges: {}, warnings: [], loadedFiles: [] }, 'name_suffix', typeof selectedCat?.name_suffix === 'string' ? selectedCat.name_suffix : undefined)}
+              value={selectedCat?.name_suffix ?? ''}
+              onInputChange={(_, value) => handleFieldChange('name_suffix', value)}
+              renderInput={(params) => <FieldTooltip field="name_suffix" label="Name suffix"><TextField {...params} fullWidth label="Name suffix" /></FieldTooltip>}
+            />
+          </Grid>
+        </Grid>
+      </Box>
+    );
+  };
+
   const renderAppearance = () => (
     <Box sx={{ display: 'grid', gap: 2 }}>
+      {renderWebAppearanceIdentityFields()}
       {Object.keys(FIELD_GROUPS).filter((group) => group === 'Appearance').map(renderFieldGroup)}
     </Box>
   );
@@ -2629,20 +2738,20 @@ export default function App() {
     return (
       <Box sx={{ display: 'grid', gridTemplateRows: 'auto auto minmax(0, 1fr)', gap: 2, minHeight: 0, alignContent: 'start' }}>
         <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} sx={{ flexShrink: 0 }}>
-          <Typography variant="h5" sx={{ flexGrow: 1 }}>Clan cats</Typography>
-          <Tooltip title="Add a new cat with randomly generated details and appearance." arrow enterDelay={300}>
+          {!webMode && <Typography variant="h5" sx={{ flexGrow: 1 }}>Clan cats</Typography>}
+          {!webMode && <Tooltip title="Add a new cat with randomly generated details and appearance." arrow enterDelay={300}>
             <span><Button variant="outlined" onClick={handleAddRandomCat} disabled={!document}>Add</Button></span>
-          </Tooltip>
-          <Tooltip title="Create a copy of the selected cat." arrow enterDelay={300}>
+          </Tooltip>}
+          {!webMode && <Tooltip title="Create a copy of the selected cat." arrow enterDelay={300}>
             <span><Button variant="outlined" onClick={() => duplicateSelectedCat()} disabled={!selectedCatId}>Duplicate</Button></span>
-          </Tooltip>
-          <Tooltip title="Delete the selected cat." arrow enterDelay={300}>
+          </Tooltip>}
+          {!webMode && <Tooltip title="Delete the selected cat." arrow enterDelay={300}>
             <span><Button variant="outlined" color="error" onClick={() => setDeleteDialogOpen(true)} disabled={!selectedCatId}>Delete</Button></span>
-          </Tooltip>
-          <Tooltip title="Select and delete multiple cats at once." arrow enterDelay={300}>
+          </Tooltip>}
+          {!webMode && <Tooltip title="Select and delete multiple cats at once." arrow enterDelay={300}>
             <span><Button variant="outlined" color="error" onClick={() => { setBulkDeleteIds([]); setBulkDeleteDialogOpen(true); }} disabled={!document || catList.length === 0}>Bulk delete</Button></span>
-          </Tooltip>
-          <Tooltip title="Select which cat to edit." arrow enterDelay={300}>
+          </Tooltip>}
+          {!webMode && <Tooltip title="Select which cat to edit." arrow enterDelay={300}>
             <span style={{ display: 'block' }}>
               <FormControl size="small" sx={{ minWidth: 260 }}>
                 <InputLabel id="cat-selector-label">Cat</InputLabel>
@@ -2682,9 +2791,9 @@ export default function App() {
                 </Select>
               </FormControl>
             </span>
-          </Tooltip>
+          </Tooltip>}
         </Stack>
-        <Paper sx={{ p: 1, flexShrink: 0 }}>
+        {!webMode && <Paper sx={{ p: 1, flexShrink: 0 }}>
           <Stack direction="row" spacing={1} alignItems="center">
             <Tabs sx={{ flexGrow: 1, minWidth: 0 }} value={tabIndex} onChange={(_, next) => setTabIndex(next)} variant="scrollable" scrollButtons="auto">
               {tabLabels.map((label) => (
@@ -2698,7 +2807,21 @@ export default function App() {
                 />
               ))}
             </Tabs>
-            <Tooltip title="Open the Family tree view focused on the currently selected cat." arrow enterDelay={300}>
+            {!webMode && <Tooltip title="Apply the Clan Cats JSON copied from the web version." arrow enterDelay={300}>
+              <span><Button
+                variant="outlined"
+                onClick={() => {
+                  setDesktopWebImportDraft('');
+                  setDesktopWebImportError(null);
+                  setDesktopWebImportDialogOpen(true);
+                }}
+                disabled={!document}
+                sx={{ flexShrink: 0 }}
+              >
+                Import from web
+              </Button></span>
+            </Tooltip>}
+            {!webMode && <Tooltip title="Open the Family tree view focused on the currently selected cat." arrow enterDelay={300}>
               <span><Button
                 variant="outlined"
                 onClick={() => {
@@ -2710,10 +2833,17 @@ export default function App() {
               >
                 Show in Family Tree
               </Button></span>
-            </Tooltip>
+            </Tooltip>}
           </Stack>
-        </Paper>
-        {tabIndex === 2 ? (
+        </Paper>}
+        {webMode ? (
+          <Box sx={{ display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr)', gap: 1, minHeight: 0 }}>
+            {renderLifeStages()}
+            <Paper sx={{ p: 2, minHeight: 0, overflow: 'auto' }}>
+              {selectedCat ? renderAppearance() : <Typography>No cat selected.</Typography>}
+            </Paper>
+          </Box>
+        ) : tabIndex === 2 ? (
           <Box sx={{ display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr)', gap: 1, minHeight: 0 }}>
             {renderLifeStages()}
             <Paper sx={{ p: 2, minHeight: 0, overflow: 'auto' }}>
@@ -2733,16 +2863,16 @@ export default function App() {
     <Box sx={{ height: '100vh', overflow: 'hidden', bgcolor: 'background.default', color: 'text.primary' }}>
       <AppBar position="static" color="transparent" elevation={0} sx={{ borderBottom: 1, borderColor: 'divider' }}>
         <Toolbar>
-          <Tooltip title="Open the file editor menu." arrow enterDelay={300}>
+          {!webMode && <Tooltip title="Open the file editor menu." arrow enterDelay={300}>
             <IconButton size="large" edge="start" color="inherit" aria-label="menu" onClick={() => setOpen(true)}>
               <MenuIcon />
             </IconButton>
-          </Tooltip>
+          </Tooltip>}
           <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
-            ClanGen Save Editor
+            {webMode ? 'ClanGen Save Editor - Web' : 'ClanGen Save Editor'}
           </Typography>
           <Stack direction="row" spacing={1}>
-            <Tooltip title="Choose the clan save to edit." arrow enterDelay={300}>
+            {!webMode && <Tooltip title="Choose the clan save to edit." arrow enterDelay={300}>
               <span style={{ display: 'block' }}>
                 <FormControl size="small" sx={{ minWidth: 220 }}>
                   <InputLabel id="clan-selector-label">Clan save</InputLabel>
@@ -2762,13 +2892,18 @@ export default function App() {
                   </Select>
                 </FormControl>
               </span>
-            </Tooltip>
-            <Tooltip title="Choose the ClanGen saves folder and load its first clan." arrow enterDelay={300}>
+            </Tooltip>}
+            {!webMode && <Tooltip title="Choose the ClanGen saves folder and load its first clan." arrow enterDelay={300}>
               <span><Button variant="contained" color="primary" disabled={openingFile} onClick={() => openSaveFile()}>
                 {openingFile ? 'Opening...' : 'Open'}
               </Button></span>
-            </Tooltip>
-            <Tooltip title="Save the current edits to the selected file." arrow enterDelay={300}>
+            </Tooltip>}
+            {webMode && <Tooltip title="Randomize the cat's name and appearance." arrow enterDelay={300}>
+              <span><Button variant="outlined" onClick={handleRandomizeAppearance} disabled={!selectedCatId}>Randomize</Button></span>
+            </Tooltip>}
+            {webMode ? <Tooltip title="Import a clan_cats.json array from pasted JSON." arrow enterDelay={300}>
+              <span><Button variant="contained" color="primary" onClick={() => { setWebImportError(null); setWebImportDialogOpen(true); }}>Import JSON</Button></span>
+            </Tooltip> : <Tooltip title="Save the current edits to the selected file." arrow enterDelay={300}>
               <span><Button
                 variant="contained"
                 color="secondary"
@@ -2781,22 +2916,81 @@ export default function App() {
               >
                 Save
               </Button></span>
-            </Tooltip>
+            </Tooltip>}
             <Tooltip title="Undo the last cat or clan attribute edit." arrow enterDelay={300}>
               <span><IconButton aria-label="Undo" onClick={undo} disabled={!canUndo}><UndoIcon /></IconButton></span>
             </Tooltip>
             <Tooltip title="Redo the last undone cat or clan attribute edit." arrow enterDelay={300}>
               <span><IconButton aria-label="Redo" onClick={redo} disabled={!canRedo}><RedoIcon /></IconButton></span>
             </Tooltip>
-            <Tooltip title="Validate the current save data." arrow enterDelay={300}>
+            {!webMode && <Tooltip title="Validate the current save data." arrow enterDelay={300}>
               <span><Button variant="outlined" onClick={() => validate()} disabled={selectedFile === 'about'}>Validate</Button></span>
-            </Tooltip>
-            <Tooltip title="Open the ClanGen data folder." arrow enterDelay={300}>
+            </Tooltip>}
+            {!webMode && <Tooltip title="Open the ClanGen data folder." arrow enterDelay={300}>
               <span><Button variant="outlined" onClick={() => openResourceDir()}>ClanGen Data</Button></span>
-            </Tooltip>
+            </Tooltip>}
+            {webMode && <Tooltip title="Copy the supported Clan Cats fields as JSON to the clipboard." arrow enterDelay={300}>
+              <span><Button variant="contained" color="secondary" onClick={() => {
+                if (!document) return;
+                void copyWebCatDocument(document)
+                  .then(() => setWebExportStatus('JSON copied to clipboard.'))
+                  .catch((error: unknown) => setWebExportStatus(error instanceof Error ? error.message : 'JSON could not be copied to the clipboard.'));
+              }} disabled={!document}>Copy JSON</Button></span>
+            </Tooltip>}
           </Stack>
         </Toolbar>
       </AppBar>
+
+      <Dialog open={webImportDialogOpen} onClose={() => setWebImportDialogOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>Import Clan Cats JSON</DialogTitle>
+        <DialogContent sx={{ display: 'grid', gap: 2 }}>
+          <DialogContentText>
+            Paste a clan_cats.json array. The web editor keeps the supported Clan Cats fields in memory and exports a filtered JSON file.
+          </DialogContentText>
+          <TextField
+            autoFocus
+            multiline
+            minRows={16}
+            value={webImportDraft}
+            onChange={(event) => setWebImportDraft(event.target.value)}
+            placeholder="Paste a JSON array of cat objects"
+            error={Boolean(webImportError)}
+            helperText={webImportError ?? 'Example: [{ "ID": "1", "name_prefix": "Fire", ... }]'}
+            sx={{ '& textarea': { fontFamily: 'monospace', fontSize: '0.85rem' } }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setWebImportDialogOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={importWebDocument} disabled={!webImportDraft.trim()}>Import</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={desktopWebImportDialogOpen} onClose={() => setDesktopWebImportDialogOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>Import from web</DialogTitle>
+        <DialogContent sx={{ display: 'grid', gap: 2 }}>
+          <DialogContentText>
+            Paste the JSON copied or exported from the web version. It will replace the cats in the current desktop document.
+          </DialogContentText>
+          <TextField
+            autoFocus
+            multiline
+            minRows={16}
+            value={desktopWebImportDraft}
+            onChange={(event) => {
+              setDesktopWebImportDraft(event.target.value);
+              setDesktopWebImportError(null);
+            }}
+            placeholder="Paste the web version's Clan Cats JSON here"
+            error={Boolean(desktopWebImportError)}
+            helperText={desktopWebImportError ?? 'Paste a JSON array of cat objects.'}
+            sx={{ '& textarea': { fontFamily: 'monospace', fontSize: '0.85rem' } }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDesktopWebImportDialogOpen(false)}>Cancel</Button>
+          <Button variant="contained" onClick={importFromWebText} disabled={!desktopWebImportDraft.trim()}>Import</Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog open={deleteDialogOpen} onClose={() => setDeleteDialogOpen(false)}>
         <DialogTitle>Delete cat?</DialogTitle>
@@ -2865,7 +3059,7 @@ export default function App() {
       </Dialog>
 
       <Box sx={{ display: 'flex', height: 'calc(100vh - 64px)', minHeight: 0 }}>
-        <Drawer anchor="left" open={open} onClose={() => setOpen(false)}>
+        {!webMode && <Drawer anchor="left" open={open} onClose={() => setOpen(false)}>
           <Box sx={{ width: 280 }}>
             <Typography variant="h6" sx={{ p: 2 }}>Files</Typography>
             <List>
@@ -2942,10 +3136,10 @@ export default function App() {
               </ListItem>
             </List>
           </Box>
-        </Drawer>
+        </Drawer>}
 
         <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, p: 2, display: 'grid', gridTemplateRows: 'auto minmax(0, 1fr)', gap: 2, alignContent: 'start', overflow: 'hidden' }}>
-          <Alert
+          {!webMode && <Alert
             severity="info"
             sx={{
               alignSelf: 'start',
@@ -2959,9 +3153,12 @@ export default function App() {
             }}
           >
             {status}
-          </Alert>
+          </Alert>}
 
           {renderFilePage()}
+          {webMode && webExportStatus && <Alert severity={webExportStatus.endsWith('.') && webExportStatus !== 'JSON copied to clipboard.' ? 'error' : 'success'} onClose={() => setWebExportStatus(null)}>
+            {webExportStatus}
+          </Alert>}
         </Box>
       </Box>
     </Box>

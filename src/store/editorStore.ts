@@ -6,7 +6,7 @@ import {
   type FamilyRelationshipCommand,
   type FamilyRelationshipMutationResult,
 } from '../model/familyRelationshipMutation';
-import { ResourceCatalog, loadResourceCatalog, mergeSpriteOptionsFromCats } from '../services/resourceCatalog';
+import { ResourceCatalog, createWebResourceCatalog, loadResourceCatalog, mergeSpriteOptionsFromCats } from '../services/resourceCatalog';
 import { createRelationshipsForNewCat, createDefaultRelationshipEntry, type RelationshipFiles } from '../model/relationships';
 import {
   DesktopFileReference,
@@ -114,6 +114,7 @@ interface EditorState {
   selectClan: (clanPath: string) => Promise<void>;
   openSaveFile: () => Promise<void>;
   openResourceDir: () => Promise<void>;
+  loadWebResources: () => void;
   saveDocument: () => Promise<void>;
   updateConditionFile: (catId: string, conditions: Record<string, unknown> | null) => void;
   updateRelationshipFile: (catId: string, relations: Record<string, unknown>[] | null) => void;
@@ -271,6 +272,8 @@ export const useEditorStore = create<EditorState>()((set, get) => ({
     await get().loadNamesFile();
     await get().loadConditionResourceFiles();
   },
+
+  loadWebResources: () => set({ resourceCatalog: createWebResourceCatalog() }),
 
   loadNamesFile: async () => {
     const directoryPath = get().resourceDirPath;
